@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -20,12 +20,13 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 
+
 use strict;
 use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7476 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -7337,14 +7338,13 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Retry package 7096
+# Retry package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Retry.pm
 #   trunk/common/t/Retry.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
-
 package Retry;
 
 use strict;
@@ -7388,7 +7388,7 @@ sub retry {
 
       if ( $EVAL_ERROR ) {
          MKDEBUG && _d("Try code died:", $EVAL_ERROR);
-         return unless $args{retry_on_die};
+         die $EVAL_ERROR unless $args{retry_on_die};
       }
 
       if ( $tryno < $tries ) {
@@ -7654,7 +7654,11 @@ sub main {
       $exit_status = lock_and_rename(%args);
    }
    elsif ( $dsns[0]->{t} ) {
-      $exit_status = sync_one_table(%args);
+	if( $dsns[0]->{t} eq '*' ){
+ 	  $exit_status = sync_all_tables(%args);		
+	}else{
+      $exit_status = sync_one_table(%args);		
+	}
    }
    elsif ( $o->get('replicate') ) {
       $exit_status = sync_via_replication(%args);
@@ -7820,6 +7824,102 @@ sub sync_one_table {
          dst   => $dst,
          %args,
       );
+
+      unlock_server(src => $src, dst => $dst, %args);
+      disconnect($dst);
+   }
+
+   disconnect($src);
+   return $exit_status;
+}
+
+# Sub: sync_all_tables
+#   Sync every table between one source host.db and multiple destination host.dbs.
+#   The first DSN in $args{dsns} specifies the source host. The other DSNs
+#   are the destination hosts.  Unlike <sync_one_table>, the table names must 
+#   be the same on the source and destination host.dbs.
+#
+# Parameters:
+#   %args - Arguments
+#
+# Required Arguments:
+#   dsns          - Arrayref of DSNs
+#   plugins       - Arrayref of TableSync* objects
+#   OptionParser  - <OptionParser> object
+#   DSNParser     - <DSNParser> object
+#   Quoter        - <Quoter> object
+#   VersionParser - <VersionParser> object
+#   TableParser   - <TableParser> object
+#   MySQLDump     - <MySQLDump> object
+#
+# Returns:
+#   Exit status
+sub sync_all_tables {
+   my ( %args ) = @_;
+   my @required_args = qw(dsns plugins OptionParser DSNParser Quoter
+                          VersionParser);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my @dsns = @{$args{dsns}};
+   my $o    = $args{OptionParser};
+   my $dp   = $args{DSNParser};
+   my $si = new SchemaIterator(
+      Quoter => $args{Quoter},
+   );
+   $si->set_filter($si->make_filter($o));
+
+   my $src = {
+      dsn      => $dsns[0],
+      dbh      => $dsns[0]->{dbh} || get_cxn($dsns[0], %args),
+      misc_dbh => get_cxn($dsns[0], %args),
+      db       => $dsns[0]->{D},
+      tbl      => $dsns[0]->{t},
+   };
+
+   # Make a list of all dbs.tbls on the source.  It's more efficient this
+   # way because it avoids open/closing a dbh for each tbl and dsn, unless
+   # we pre-opened the dsn.  It would also cause confusing verbose output.
+   my @dbs_tbls;
+      MKDEBUG && _d('Getting tables from', $src->{db} );
+      my $next_tbl = $si->get_tbl_itr(
+         dbh   => $src->{dbh},
+         db    => $src->{db},
+         views => 0,
+      );
+      while ( my $tbl = $next_tbl->() ) {
+         MKDEBUG && _d('Got table', $tbl);
+         push @dbs_tbls, { db => $src->{db}, tbl => $tbl };
+      }
+
+
+   my $exit_status = 0;
+   foreach my $dsn ( @dsns[1 .. $#dsns] ) {
+      if ( $o->get('verbose') ) {
+         print_header("# Syncing " . $dp->as_string($dsn)
+            . ($o->get('dry-run')
+               ? ' in dry-run mode, without accessing or comparing data' : ''));
+      }
+
+      my $dst = {
+         dsn      => $dsn,
+         dbh      => $dsn->{dbh} || get_cxn($dsn, %args),
+         misc_dbh => get_cxn($dsn, %args),
+         db       => $dsn->{D} || $src->{db},
+         tbl      => undef,  # set later
+      };
+
+      lock_server(src => $src, dst => $dst, %args);
+
+      foreach my $db_tbl ( @dbs_tbls ) {
+         $src->{tbl} = $dst->{tbl} = $db_tbl->{tbl};
+
+         $exit_status |= sync_a_table(
+            src => $src,
+            dst => $dst,
+            %args,
+         );
+      }
 
       unlock_server(src => $src, dst => $dst, %args);
       disconnect($dst);
@@ -9525,7 +9625,7 @@ If the destination server is a slave, it's generally unsafe to make changes on
 it.  However, sometimes you have to; L<"--replace"> won't work unless there's a
 unique index, for example, so you can't make changes on the master in that
 scenario.  By default mk-table-sync will complain if you try to change data on
-a slave.  Specify C<--no-slave-check> to disable this check.  Use it at your own
+a slave.  Specify C<--no-check-slave> to disable this check.  Use it at your own
 risk.
 
 =item --[no]check-triggers
@@ -9666,10 +9766,8 @@ short form: -d; type: hash
 Sync only this comma-separated list of databases.
 
 A common request is to sync tables from one database with tables from another
-database on the same or different server.  This is not yet possible.
-L<"--databases"> will not do it, and you can't do it with the D part of the DSN
-either because in the absence of a table name it assumes the whole server
-should be synced and the D part controls only the connection's default database.
+database on the same or different server.  This *is* possible by passing an
+asterisk (*) as the one and only table name of the source.
 
 =item --defaults-file
 
@@ -10208,7 +10306,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -10231,7 +10329,7 @@ was created by Baron Schwartz; Baron and Daniel Nichter are the primary
 code contributors.  Both are employed by Percona.  Financial support for
 Maatkit development is primarily provided by Percona and its clients. 
 
-=head1 HISTORY AND ACKNOWLEDGEMENTS
+=head1 HISTORY AND ACKNOWLEDGMENTS
 
 My work is based in part on Giuseppe Maxia's work on distributed databases,
 L<http://www.sysadminmag.com/articles/2004/0408/> and code derived from that
@@ -10276,15 +10374,17 @@ The Rimm-Kaufman Group L<http://www.rimmkaufman.com/>,
 MySQL AB L<http://www.mysql.com/>,
 Blue Ridge InternetWorks L<http://www.briworks.com/>,
 Percona L<http://www.percona.com/>,
+Pascal Metrics L<http://www.pascalmetrics.com/>,
 Fabien Coelho,
 Giuseppe Maxia and others at MySQL AB,
 Kristian Koehntopp (MySQL AB),
 Rohit Nadhani (WebYog),
+Eric Simmerman,
 The helpful monks at Perlmonks,
 And others too numerous to mention.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7476 $.
 
 =cut
