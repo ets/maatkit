@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -2381,7 +2381,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-fk-error-logger>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-fk-error-logger>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -2399,7 +2399,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software

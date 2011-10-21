@@ -7,7 +7,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -24,7 +24,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7588 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -2430,7 +2430,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MasterSlave package 6935
+# MasterSlave package 7587
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MasterSlave.pm
@@ -2700,39 +2700,40 @@ sub get_slave_status {
       MKDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
       $self->{not_a_slave}->{$dbh}++;
    }
+   return;
 }
 
 sub get_master_status {
    my ( $self, $dbh ) = @_;
-   if ( !$self->{not_a_master}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-            ||= $dbh->prepare('SHOW MASTER STATUS');
-      MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
-      $sth->execute();
-      my ($ms) = @{$sth->fetchall_arrayref({})};
 
-      if ( $ms && %$ms ) {
-         $ms = { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
-         if ( $ms->{file} && $ms->{position} ) {
-            return $ms;
-         }
-      }
+   if ( $self->{not_a_master}->{$dbh} ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+      return;
+   }
 
-      MKDEBUG && _d('This server returns nothing for SHOW MASTER STATUS');
+   my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
+         ||= $dbh->prepare('SHOW MASTER STATUS');
+   MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   $sth->execute();
+   my ($ms) = @{$sth->fetchall_arrayref({})};
+   MKDEBUG && _d(Dumper($ms));
+
+   if ( !$ms || scalar keys %$ms < 2 ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
       $self->{not_a_master}->{$dbh}++;
    }
+
+  return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
 sub wait_for_master {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_dbh slave_dbh);
+   my @required_args = qw(master_status slave_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $slave_dbh) = @args{@required_args};
+   my ($master_status, $slave_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
-   my $master_status = $args{master_status}
-                       || $self->get_master_status($master_dbh);
 
    my $result;
    my $waited;
@@ -2740,8 +2741,8 @@ sub wait_for_master {
       my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', "
               . "$master_status->{position}, $timeout)";
       MKDEBUG && _d($slave_dbh, $sql);
-      my $start  = time;
-      ($result)  = $slave_dbh->selectrow_array($sql);
+      my $start = time;
+      ($result) = $slave_dbh->selectrow_array($sql);
 
       $waited = time - $start;
 
@@ -2783,7 +2784,7 @@ sub start_slave {
 }
 
 sub catchup_to_master {
-   my ( $self, $slave, $master, $time ) = @_;
+   my ( $self, $slave, $master, $timeout ) = @_;
    $self->stop_slave($master);
    $self->stop_slave($slave);
    my $slave_status  = $self->get_slave_status($slave);
@@ -2799,12 +2800,12 @@ sub catchup_to_master {
       $self->start_slave($slave, $master_pos);
 
       $result = $self->wait_for_master(
-            master_dbh    => $master,
+            master_status => $master_status,
             slave_dbh     => $slave,
-            timeout       => $time,
+            timeout       => $timeout,
             master_status => $master_status
       );
-      if ( !defined $result ) {
+      if ( !defined $result->{result} ) {
          $slave_status = $self->get_slave_status($slave);
          if ( !$self->slave_is_running($slave_status) ) {
             MKDEBUG && _d('Master position:',
@@ -3052,6 +3053,7 @@ sub repl_posn {
 sub get_slave_lag {
    my ( $self, $dbh ) = @_;
    my $stat = $self->get_slave_status($dbh);
+   return unless $stat;
    return $stat->{seconds_behind_master};
 }
 
@@ -3209,7 +3211,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -4052,7 +4054,7 @@ Usage: mk-kill [OPTION]... [FILE...]
 
 mk-kill kills MySQL connections.  mk-kill connects to MySQL and gets queries
 from SHOW PROCESSLIST if no FILE is given.  Else, it reads queries from one
-or more FILE which containts the output of SHOW PROCESSLIST.  If FILE is -,
+or more FILE which contains the output of SHOW PROCESSLIST.  If FILE is -,
 mk-kill reads from STDIN.
 
 Kill queries running longer than 60s:
@@ -4086,8 +4088,8 @@ mk-kill is designed to kill queries if you use the L<"--kill"> option is given,
 and that might disrupt your database's users, of course.  You should test with
 the <"--print"> option, which is safe, if you're unsure what the tool will do.
 
-At the time of this release there is a bug that allows replication threads
-executing triggers to be killed.
+At the time of this release, we know of no bugs that could cause serious harm to
+users.
 
 The authoritative source for updated information is always the online issue
 tracking system.  Issues that affect this tool will be marked as such.  You can
@@ -4158,7 +4160,7 @@ query, or all queries, etc.
 The forth and final step is to take some action on all matching queries
 from all classes.  The C<Actions> options specify which actions will be
 taken.  At this step, there are no more classes, just a single list of
-querys to kill, print, etc.
+queries to kill, print, etc.
 
 =head1 OUTPUT
 
@@ -4407,7 +4409,7 @@ These options filter queries from their classes.  If a query does not
 match, it is removed from its class.  The C<--ignore> options take precedence.
 The matches for command, db, host, etc. correspond to the columns returned
 by SHOW PROCESSLIST: Command, db, Host, etc.  All pattern matches are
-case-sensitive by default, but they can be made case-insenstive by specifying
+case-sensitive by default, but they can be made case-insensitive by specifying
 a regex pattern like C<(?i-xsm:select)>.
 
 See also L<"GROUP, MATCH AND KILL">.
@@ -4422,11 +4424,11 @@ Match all queries that are not ignored.  If no ignore options are specified,
 then every query matches (except replication threads, unless
 L<"--replication-threads"> is also specified).  This option allows you to
 specify negative matches, i.e. "match every query I<except>..." where the
-execptions are defined by specifying varous C<--ignore> options.
+exceptions are defined by specifying various C<--ignore> options.
 
 This option is I<not> the same as L<"--victims"> C<all>.  This option matches
 all queries within a class, whereas L<"--victims"> C<all> specifies that all
-matching quries in a class (however they matched) will be killed.  Normally,
+matching queries in a class (however they matched) will be killed.  Normally,
 however, the two are used together because if, for example, you specify
 L<"--victims"> C<oldest>, then although all queries may match, only the oldest
 will be killed.
@@ -4639,6 +4641,8 @@ are at least this many queries in the entire SHOW PROCESSLIST.
 
 =item --verbose
 
+short form: -v
+
 Print information to STDOUT about what is being done.
 
 =back
@@ -4796,7 +4800,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-kill>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-kill>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -4814,7 +4818,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -4839,6 +4843,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7588 $.
 
 =cut

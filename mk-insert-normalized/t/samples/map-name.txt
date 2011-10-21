@@ -1,0 +1,2 @@
+name_1 test.entity_1.name !
+name_2 test.entity_2.name !

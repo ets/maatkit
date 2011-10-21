@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# OSCCaptureSync package $Revision$
+# OSCCaptureSync package $Revision: 7463 $
 # ###########################################################################
 
 # Package: OSCCaptureSync
@@ -51,11 +51,11 @@ sub new {
 
 sub capture {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh msg old_table new_table columns chunk_column);
+   my @required_args = qw(msg dbh db tbl tmp_tbl columns chunk_column);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $msg) = @args{@required_args};
+   my ($msg, $dbh) = @args{@required_args};
 
    my @triggers = $self->_make_triggers(%args);
    foreach my $sql ( @triggers ) {
@@ -68,12 +68,14 @@ sub capture {
 
 sub _make_triggers {
    my ( $self, %args ) = @_;
-   my @required_args = qw(old_table new_table chunk_column columns);
+   my @required_args = qw(db tbl tmp_tbl chunk_column columns);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($old_table, $new_table, $chunk_column) = @args{@required_args};
+   my ($db, $tbl, $tmp_tbl, $chunk_column) = @args{@required_args};
 
+   my $old_table  = "`$db`.`$tbl`";
+   my $new_table  = "`$db`.`$tmp_tbl`";
    my $new_values = join(', ', map { "NEW.$_" } @{$args{columns}});
    my $columns    = join(', ', @{$args{columns}});
 

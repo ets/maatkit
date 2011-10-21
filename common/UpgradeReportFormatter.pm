@@ -16,7 +16,7 @@
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 
 # ###########################################################################
-# UpgradeReportFormatter package $Revision$
+# UpgradeReportFormatter package $Revision: 7193 $
 # ###########################################################################
 
 package UpgradeReportFormatter;

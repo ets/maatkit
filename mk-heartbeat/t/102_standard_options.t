@@ -39,7 +39,7 @@ my $cmd = "$trunk/mk-heartbeat/mk-heartbeat -F $cnf ";
 # Issue 391: Add --pid option to all scripts
 # #########################################################################
 `touch /tmp/mk-script.pid`;
-$output = `$cmd --host 127.1 -u msandbox -p msandbox --port 12345 -D test --check --recurse 1 --pid /tmp/mk-script.pid --create-table 2>&1`;
+$output = `$cmd --host 127.1 -u msandbox -p msandbox --port 12345 -D test --check --recurse 1 --pid /tmp/mk-script.pid --create-table --master-server-id 12345 2>&1`;
 like(
    $output,
    qr{PID file /tmp/mk-script.pid already exists},
@@ -50,5 +50,4 @@ like(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($dbh);
 exit;

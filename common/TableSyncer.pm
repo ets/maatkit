@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# TableSyncer package $Revision$
+# TableSyncer package $Revision: 7528 $
 # ###########################################################################
 package TableSyncer;
 
@@ -530,10 +530,11 @@ sub lock_and_wait {
                # Always use the misc_dbh dbh to check the master's position
                # because the main dbh might be in use due to executing
                # $src_sth.
-               my $wait = $self->{MasterSlave}->wait_for_master(
-                  master_dbh => $src->{misc_dbh},
-                  slave_dbh  => $dst->{dbh},
-                  timeout    => $timeout,
+               my $ms   = $self->{MasterSlave};
+               my $wait = $ms->wait_for_master(
+                  master_status => $ms->get_master_status($src->{misc_dbh}),
+                  slave_dbh     => $dst->{dbh},
+                  timeout       => $timeout,
                );
                if ( !defined $wait->{result} ) {
                   # Slave was stopped either before or during the wait.

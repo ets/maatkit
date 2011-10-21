@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -22,7 +22,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7628 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # DSNParser package 7388
@@ -1737,7 +1737,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -2466,7 +2466,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TcpdumpParser package 6590
+# TcpdumpParser package 7505
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TcpdumpParser.pm
@@ -2514,6 +2514,8 @@ sub parse_event {
       my $packet = $self->_parse_packet($raw_packet);
       $packet->{pos_in_log} = $pos_in_log;
       $packet->{raw_packet} = $raw_packet;
+
+      $args{stats}->{events_read}++ if $args{stats};
 
       return $packet;
    }
@@ -2597,7 +2599,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MySQLProtocolParser package 6909
+# MySQLProtocolParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MySQLProtocolParser.pm
@@ -2973,6 +2975,7 @@ sub parse_event {
       MKDEBUG && _d('Session deleted');
    }
 
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 
@@ -4487,7 +4490,103 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# DrizzleQueryLogParser package 7627
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/DrizzleQueryLogParser.pm
+#   trunk/common/t/DrizzleQueryLogParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package DrizzleQueryLogParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+
+my $val_pat = qr/(?>(?:"[^"]+"|\S+))/;
+
+sub new {
+   my ( $class ) = @_;
+   my $self = {};
+   return bless $self, $class;
+}
+
+sub parse_event {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(next_event tell);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($next_event, $tell) = @args{@required_args};
+
+   local $INPUT_RECORD_SEPARATOR = "\n#\n";
+   my $pos_in_log = $tell->();
+   my $stmt;
+
+   EVENT:
+   while ( defined($stmt = $next_event->()) ) {
+      my @properties = ('cmd', 'Query', 'pos_in_log', $pos_in_log);
+      $pos_in_log = $tell->();
+
+      chomp $stmt;  # remove input record separator after query
+
+      my @props;
+      COMMENT_LINE:
+      while ($stmt =~ m/^# /gcm) {
+         ATTRIB_VALUE:
+         while (my @prop = $stmt =~ m/\G([a-z_]+)=($val_pat)(?:\s|\Z)/gc) {
+            $prop[0] = $prop[0] eq 'start_ts'       ? 'ts'
+                     : $prop[0] eq 'execution_time' ? 'Query_time'
+                     : $prop[0];
+            my $i = 1;
+            while ($prop[$i]) {
+               if ( $prop[$i] =~ m/^"/ ) { # double-quoted string values
+                  $prop[$i] =~ s/^"//;
+                  $prop[$i] =~ s/"$//;
+               }
+               elsif ( $prop[$i] eq 'true' || $prop[$i] eq 'false' ) { # bools
+                  $prop[$i] = $prop[$i] eq 'true' ? 'Yes' : 'No';
+               }
+               $i += 2;  # values are every other array element
+            }
+            push @props, @prop;
+         }
+      }
+      push @props, 'arg', substr($stmt, pos $stmt);
+
+      MKDEBUG && _d('Properties of event:', Dumper(\@props));
+      my $event = { @props };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
+      return $event;
+   } # EVENT
+
+   $args{oktorun}->(0) if $args{oktorun};
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End DrizzleQueryLogParser package
+# ###########################################################################
+
+# ###########################################################################
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -4657,6 +4756,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -5720,7 +5823,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ReportFormatter package 7359
+# ReportFormatter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ReportFormatter.pm
@@ -7415,7 +7518,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -7461,7 +7564,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -8874,7 +8977,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MemcachedProtocolParser package 6590
+# MemcachedProtocolParser package 7521
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MemcachedProtocolParser.pm
@@ -8914,6 +9017,12 @@ sub parse_event {
    }
    my $packet = @args{@required_args};
 
+   if ( $packet->{data_len} == 0 ) {
+      MKDEBUG && _d('No TCP data');
+      $args{stats}->{no_tcp_data}++ if $args{stats};
+      return;
+   }
+
    my $src_host = "$packet->{src_host}:$packet->{src_port}";
    my $dst_host = "$packet->{dst_host}:$packet->{dst_port}";
 
@@ -8921,6 +9030,7 @@ sub parse_event {
       $server .= ":$self->{port}";
       if ( $src_host ne $server && $dst_host ne $server ) {
          MKDEBUG && _d('Packet is not to or from', $server);
+         $args{stats}->{not_watched_server}++ if $args{stats};
          return;
       }
    }
@@ -8951,31 +9061,28 @@ sub parse_event {
    };
    my $session = $self->{sessions}->{$client};
 
-   if ( $packet->{data_len} == 0 ) {
-      MKDEBUG && _d('No TCP data');
-      return;
-   }
-
    push @{$session->{raw_packets}}, $packet->{raw_packet};
 
    $packet->{data} = pack('H*', $packet->{data});
    my $event;
    if ( $packet_from eq 'server' ) {
-      $event = $self->_packet_from_server($packet, $session, $args{misc});
+      $event = $self->_packet_from_server($packet, $session, %args);
    }
    elsif ( $packet_from eq 'client' ) {
-      $event = $self->_packet_from_client($packet, $session, $args{misc});
+      $event = $self->_packet_from_client($packet, $session, %args);
    }
    else {
+      $args{stats}->{unknown_packet_origin}++ if $args{stats};
       die 'Packet origin unknown';
    }
 
    MKDEBUG && _d('Done with packet; event:', Dumper($event));
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 
 sub _packet_from_server {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -8985,12 +9092,17 @@ sub _packet_from_server {
 
    if ( !$session->{state} ) {
       MKDEBUG && _d('Ignoring mid-stream server response');
+      $args{stats}->{ignored_midstream_server_response}++ if $args{stats};
       return;
    }
 
    if ( $session->{state} eq 'awaiting reply' ) {
       MKDEBUG && _d('State is awaiting reply');
       my ($line1, $rest) = $packet->{data} =~ m/\A(.*?)\r\n(.*)?/s;
+      if ( !$line1 ) {
+         $args{stats}->{unknown_server_data}++ if $args{stats};
+         die "Unknown memcached data from server";
+      }
 
       my @vals = $line1 =~ m/(\S+)/g;
       $session->{res} = shift @vals;
@@ -9009,11 +9121,12 @@ sub _packet_from_server {
          my ($key, $flags, $bytes) = @vals;
          defined $session->{flags} or $session->{flags} = $flags;
          defined $session->{bytes} or $session->{bytes} = $bytes;
+
          if ( $rest && $bytes ) {
             MKDEBUG && _d('There is a value');
             if ( length($rest) > $bytes ) {
-               MKDEBUG && _d('Looks like we got the whole response');
-               $session->{val} = substr($rest, 0, $bytes); # Got the whole response.
+               MKDEBUG && _d('Got complete response');
+               $session->{val} = substr($rest, 0, $bytes);
             }
             else {
                MKDEBUG && _d('Got partial response, saving for later');
@@ -9030,6 +9143,9 @@ sub _packet_from_server {
       }
       elsif ( $session->{res} !~ m/STORED|DELETED|NOT_FOUND/ ) {
          MKDEBUG && _d('Unknown result');
+      }
+      else {
+         $args{stats}->{unknown_server_response}++ if $args{stats};
       }
    }
    else { # Should be 'partial recv'
@@ -9060,7 +9176,7 @@ sub _packet_from_server {
 }
 
 sub _packet_from_client {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -9082,6 +9198,12 @@ sub _packet_from_client {
    if ( !$session->{state} ) {
       MKDEBUG && _d('Session state: ', $session->{state});
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
+      if ( !$line1 ) {
+         MKDEBUG && _d('Unknown memcached data from client, skipping packet');
+         $args{stats}->{unknown_client_data}++ if $args{stats};
+         return;
+      }
+
       my @vals = $line1 =~ m/(\S+)/g;
       $cmd = lc shift @vals;
       MKDEBUG && _d('$cmd is a ', $cmd);
@@ -9108,7 +9230,10 @@ sub _packet_from_client {
       }
       else {
          MKDEBUG && _d("Don't know how to handle", $cmd, "command");
+         $args{stats}->{unknown_client_command}++ if $args{stats};
+         return;
       }
+
       @{$session}{qw(cmd key flags exptime)}
          = ($cmd, $key, $flags, $exptime);
       $session->{host}       = $packet->{src_host};
@@ -9123,7 +9248,7 @@ sub _packet_from_client {
    $session->{state} = 'awaiting reply'; # Assume we got the whole packet
    if ( $val ) {
       if ( $session->{bytes} + 2 == length($val) ) { # +2 for the \r\n
-         MKDEBUG && _d('Got the whole thing');
+         MKDEBUG && _d('Complete send');
          $val =~ s/\r\n\Z//; # We got the whole thing.
          $session->{val} = $val;
       }
@@ -9187,26 +9312,6 @@ sub _get_errors_fh {
 
    $self->{errors_fh} = $errors_fh;
    return $errors_fh;
-}
-
-sub fail_session {
-   my ( $self, $session, $reason ) = @_;
-   my $errors_fh = $self->_get_errors_fh();
-   if ( $errors_fh ) {
-      $session->{reason_for_failure} = $reason;
-      my $session_dump = '# ' . Dumper($session);
-      chomp $session_dump;
-      $session_dump =~ s/\n/\n# /g;
-      print $errors_fh "$session_dump\n";
-      {
-         local $LIST_SEPARATOR = "\n";
-         print $errors_fh "@{$session->{raw_packets}}";
-         print $errors_fh "\n";
-      }
-   }
-   MKDEBUG && _d('Failed session', $session->{client}, 'because', $reason);
-   delete $self->{sessions}->{$session->{client}};
-   return;
 }
 
 sub _d {
@@ -9388,7 +9493,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# BinaryLogParser package 6785
+# BinaryLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/BinaryLogParser.pm
@@ -9561,6 +9666,10 @@ sub parse_event {
       if ( $found_arg ) {
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {
@@ -9587,7 +9696,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# GeneralLogParser package 7096
+# GeneralLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/GeneralLogParser.pm
@@ -9721,6 +9830,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 
@@ -9744,7 +9857,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ProtocolParser package 7096
+# ProtocolParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ProtocolParser.pm
@@ -9809,11 +9922,13 @@ sub parse_event {
       my $event;
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{client_packets}};
       
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{server_packets}};
 
@@ -9825,7 +9940,9 @@ sub parse_event {
       return;
    }
 
-   return $self->_parse_packet($packet, $args{misc});
+   my $event = $self->_parse_packet($packet, $args{misc});
+   $args{stats}->{events_parsed}++ if $args{stats};
+   return $event;
 }
 
 sub _parse_packet {
@@ -10390,7 +10507,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MasterSlave package 6935
+# MasterSlave package 7587
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MasterSlave.pm
@@ -10660,39 +10777,40 @@ sub get_slave_status {
       MKDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
       $self->{not_a_slave}->{$dbh}++;
    }
+   return;
 }
 
 sub get_master_status {
    my ( $self, $dbh ) = @_;
-   if ( !$self->{not_a_master}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-            ||= $dbh->prepare('SHOW MASTER STATUS');
-      MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
-      $sth->execute();
-      my ($ms) = @{$sth->fetchall_arrayref({})};
 
-      if ( $ms && %$ms ) {
-         $ms = { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
-         if ( $ms->{file} && $ms->{position} ) {
-            return $ms;
-         }
-      }
+   if ( $self->{not_a_master}->{$dbh} ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+      return;
+   }
 
-      MKDEBUG && _d('This server returns nothing for SHOW MASTER STATUS');
+   my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
+         ||= $dbh->prepare('SHOW MASTER STATUS');
+   MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   $sth->execute();
+   my ($ms) = @{$sth->fetchall_arrayref({})};
+   MKDEBUG && _d(Dumper($ms));
+
+   if ( !$ms || scalar keys %$ms < 2 ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
       $self->{not_a_master}->{$dbh}++;
    }
+
+  return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
 sub wait_for_master {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_dbh slave_dbh);
+   my @required_args = qw(master_status slave_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $slave_dbh) = @args{@required_args};
+   my ($master_status, $slave_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
-   my $master_status = $args{master_status}
-                       || $self->get_master_status($master_dbh);
 
    my $result;
    my $waited;
@@ -10700,8 +10818,8 @@ sub wait_for_master {
       my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', "
               . "$master_status->{position}, $timeout)";
       MKDEBUG && _d($slave_dbh, $sql);
-      my $start  = time;
-      ($result)  = $slave_dbh->selectrow_array($sql);
+      my $start = time;
+      ($result) = $slave_dbh->selectrow_array($sql);
 
       $waited = time - $start;
 
@@ -10743,7 +10861,7 @@ sub start_slave {
 }
 
 sub catchup_to_master {
-   my ( $self, $slave, $master, $time ) = @_;
+   my ( $self, $slave, $master, $timeout ) = @_;
    $self->stop_slave($master);
    $self->stop_slave($slave);
    my $slave_status  = $self->get_slave_status($slave);
@@ -10759,12 +10877,12 @@ sub catchup_to_master {
       $self->start_slave($slave, $master_pos);
 
       $result = $self->wait_for_master(
-            master_dbh    => $master,
+            master_status => $master_status,
             slave_dbh     => $slave,
-            timeout       => $time,
+            timeout       => $timeout,
             master_status => $master_status
       );
-      if ( !defined $result ) {
+      if ( !defined $result->{result} ) {
          $slave_status = $self->get_slave_status($slave);
          if ( !$self->slave_is_running($slave_status) ) {
             MKDEBUG && _d('Master position:',
@@ -11012,6 +11130,7 @@ sub repl_posn {
 sub get_slave_lag {
    my ( $self, $dbh ) = @_;
    my $stat = $self->get_slave_status($dbh);
+   return unless $stat;
    return $stat->{seconds_behind_master};
 }
 
@@ -11747,7 +11866,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Pipeline package 7268
+# Pipeline package 7509
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Pipeline.pm
@@ -11829,6 +11948,8 @@ sub execute {
    my $pipeline_data = $args{pipeline_data} || {};
    $pipeline_data->{oktorun} = $oktorun;
 
+   my $stats = $args{stats};  # optional
+
    MKDEBUG && _d("Pipeline starting at", time);
    my $instrument = $self->{instrument};
    my $processes  = $self->{procs};
@@ -11855,6 +11976,10 @@ sub execute {
             if ( !$output ) {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
+               if ( $stats ) {
+                  $stats->{"pipeline_restarted_after_"
+                     .$self->{names}->[$procno]}++;
+               }
                last PIPELINE_PROCESS;
             }
             $procno++;
@@ -11926,8 +12051,7 @@ $OUTPUT_AUTOFLUSH     = 1;
 Transformers->import(qw(shorten micro_t percentage_of ts make_checksum
    any_unix_timestamp parse_timestamp unix_timestamp crc32));
 
-use constant MKDEBUG        => $ENV{MKDEBUG}        || 0;
-use constant MKDEBUG_MEMORY => $ENV{MKDEBUG_MEMORY} || 0;
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 use sigtrap 'handler', \&sig_int, 'normal-signals';
 
@@ -12115,7 +12239,7 @@ sub main {
             dbh       => $qv_dbh,
             db        => $db_tbl[0],
             tbl       => $db_tbl[1],
-            all_privs => 1) )
+            all_privs => $o->get('check-privileges')) )
       {
          die "The query review table $db_tbl "
             . "does not exist or you do not have INSERT privileges";
@@ -12158,7 +12282,7 @@ sub main {
                dbh       => $qv_dbh2,
                db        => $hdb_tbl[0],
                tbl       => $hdb_tbl[1],
-               all_privs => 1) )
+               all_privs => $o->get('check-privileges')) )
          {
             die "The query review history table $hdb_tbl "
                . "does not exist or you do not have INSERT privileges";
@@ -12218,7 +12342,10 @@ sub main {
    # pass data through the pipeline.  The most importat data is the event.
    # Other data includes in the next_event callback, time and iters left,
    # etc.  This hashref is accessed inside a proc via the $args arg.
-   my $pipeline_data = { iter => 1 };
+   my $pipeline_data = {
+      iter  => 1,
+      stats => \%stats,
+   };
 
    # Enable timings to instrument code for either of these two opts.
    # Else, don't instrument to avoid cost of measurement.
@@ -12389,14 +12516,15 @@ sub main {
       }  # get events from processlist
       else {
          my %alias_for = (
-            slowlog   => ['SlowLogParser'],
-            binlog    => ['BinaryLogParser'],
-            genlog    => ['GeneralLogParser'],
-            tcpdump   => ['TcpdumpParser','MySQLProtocolParser'],
-            memcached => ['TcpdumpParser','MemcachedProtocolParser',
-                          'MemcachedEvent'],
-            http      => ['TcpdumpParser','HTTPProtocolParser'],
-            pglog     => ['PgLogParser'],
+            slowlog    => ['SlowLogParser'],
+            binlog     => ['BinaryLogParser'],
+            genlog     => ['GeneralLogParser'],
+            tcpdump    => ['TcpdumpParser','MySQLProtocolParser'],
+            memcached  => ['TcpdumpParser','MemcachedProtocolParser',
+                           'MemcachedEvent'],
+            http       => ['TcpdumpParser','HTTPProtocolParser'],
+            pglog      => ['PgLogParser'],
+            drizzlelog => ['DrizzleQueryLogParser'],
          );
          my $type = $o->get('type');
          $type    = $alias_for{$type->[0]} if $alias_for{$type->[0]};
@@ -12437,6 +12565,7 @@ sub main {
                         tell        => $args->{tell},
                         misc        => $args->{misc},
                         oktorun     => sub { $args->{more_events} = $_[0]; },
+                        stats       => $args->{stats},
                      );
                      if ( $event ) {
                         $args->{event} = $event;
@@ -12670,14 +12799,18 @@ sub main {
 
             if ( $report ) {
                MKDEBUG && _d("Iteration", $args->{iter}, "stopped at",ts(time));
-               if ( $ea[0]->events_processed() ) {
+
+               # Get this before calling print_reports() because that sub
+               # resets each ea and we may need this later for stats.
+               my $n_events_aggregated = $ea[0]->events_processed();
+
+               if ( $n_events_aggregated ) {
                   print_reports(
                      eas             => \@ea,
                      tls             => \@tl,
                      groupby         => \@groupby,
                      orderby         => \@orderby,
                      files           => \@read_files,
-                     stats           => \%stats,
                      Pipeline        => $pipeline,
                      QueryReview     => $qv,
                      ExplainAnalyzer => $exa,
@@ -12686,6 +12819,54 @@ sub main {
                }
                else {
                   print "\n# No events processed.\n";
+               }
+
+               if ( $o->get('statistics') ) {
+                  if ( keys %stats ) {
+                     my $report = new ReportFormatter(
+                        line_width => 74,
+                     );
+                     $report->set_columns(
+                        { name => 'Statistic',                  },
+                        { name => 'Count',    right_justify => 1 },
+                        { name => '%/Events', right_justify => 1 },
+                     );
+
+                     # Have to add this one manually because currently
+                     # EventAggregator::aggregate() doesn't know about stats.
+                     # It's the same thing as events_processed() though.
+                     $stats{events_aggregated} = $n_events_aggregated;
+
+                     # Save value else events_read will be reset during the
+                     # foreach loop below and mess up percentage_of().
+                     my $n_events_read = $stats{events_read} || 0;
+
+                     my %stats_sort_order = (
+                        events_read       => 1,
+                        events_parsed     => 2,
+                        events_aggregated => 3,
+                     );
+                     my @stats = sort {
+                           QueryReportFormatter::pref_sort(
+                              $a, $stats_sort_order{$a},
+                              $b, $stats_sort_order{$b})
+                     } keys %stats;
+                     foreach my $stat ( @stats ) {
+                        $report->add_line(
+                           $stat,
+                           $stats{$stat} || 0,
+                           percentage_of(
+                              $stats{$stat} || 0,
+                              $n_events_read,
+                              p => 2),
+                        );
+                        $stats{$stat} = 0;  # Reset for next iteration.
+                     }
+                     print "\n" . $report->get_report();
+                  }
+                  else {
+                     print "\n# No statistics values.\n";
+                  }
                }
 
                # Decrement iters_left after finishing an iter because in the
@@ -13188,6 +13369,7 @@ sub main {
       $pipeline->execute(
          oktorun       => \$oktorun,
          pipeline_data => $pipeline_data,
+         stats         => \%stats,
       );
    };
    if ( $EVAL_ERROR ) {
@@ -13323,7 +13505,7 @@ sub print_reports {
          );
       }
 
-      $eas->[$i]->reset_aggregated_data();  # reset for next iteration
+      $eas->[$i]->reset_aggregated_data();  # Reset for next iteration.
 
       # Print header report only once.  So remove it from the
       # list of reports after the first groupby's reports.
@@ -13355,28 +13537,6 @@ sub print_reports {
       $pipeline->reset();
 
       print "\n" . $report->get_report();
-   }
-
-   if ( $o->get('statistics') ) {
-      if ( keys %$stats ) {
-         my $report = new ReportFormatter(
-            line_width => 74,
-         );
-         $report->set_columns(
-            { name => 'Statistic',                    },
-            { name => 'Value',     right_justify => 1 },
-         );
-         foreach my $stat ( sort keys %$stats ) {
-            $report->add_line($stat, $stats->{$stat} || 0);
-
-            # Reset stats for next iteration.
-            $stats->{$stat} = 0;
-         }
-         print "\n" . $report->get_report();
-      }
-      else {
-         print "\n# No statistics values.\n";
-      }
    }
 
    return;
@@ -13780,8 +13940,8 @@ sub verify_run_time {
       else {
          # If run time is sub-minute (some amount of seconds), it should
          # divide evenly into minute boundaries.  If it's sub-minute
-         # (some amount of minutes), it should divide evently into hour
-         # boundaries.  If it's sub-hour, it should divide evently into
+         # (some amount of minutes), it should divide evenly into hour
+         # boundaries.  If it's sub-hour, it should divide eventy into
          # day boundaries.
          $boundary = $run_time <= 60   ? 60     # seconds divide into minutes
                    : $run_time <= 3600 ? 3600   # minutes divide into hours
@@ -14312,7 +14472,7 @@ attribute's value and removes the alias attribute.
 
 If the event has the primary attribute, all alias attributes are deleted.
 
-This helps to simplify event attributes so that, for example, there will not
+This helps simplify event attributes so that, for example, there will not
 be report lines for both db and Schema.
 
 =item --attribute-value-limit
@@ -14362,6 +14522,17 @@ One special case is new attributes for pre-existing query classes
 (see L<"--group-by"> about query classes).  New attributes will not be added
 to pre-existing query classes even if the attributes are detected before the
 L<"--check-attributes-limit"> limit.
+
+=item --[no]check-privileges
+
+default: yes
+
+Check privileges for L<"--review"> and L<"--review-history"> tables.
+By default, the tool checks and requires that the user has all privileges
+(SELECT, INSERT, UPDATE, and DELETE) on the L<"--review"> and
+L<"--review-history"> tables.  Specifying C<--no-check-privileges> disables
+these checks.  If disabled, you must ensure that the tool will be able
+to read and write to the tables, else the review functions may not work.
 
 =item --config
 
@@ -15239,7 +15410,7 @@ L<"--run-time"> specifies interval boundaries of log time into which events
 are divided and reports are generated.  This mode is different from the
 others because it doesn't specify how long to run.  The value of
 L<"--run-time"> must be an interval that divides evenly into minutes, hours
-or days.  For example, C<5m> divides evently into hours (60/5=12, so 12
+or days.  For example, C<5m> divides evenly into hours (60/5=12, so 12
 5 minutes intervals per hour) but C<7m> does not (60/7=8.6).
 
 Specifying C<--run-time-mode interval --run-time 30m --iterations 0> is
@@ -15254,7 +15425,7 @@ Intervals are calculated from the zeroth second/minute/hour in which a
 timestamp occurs, not from whatever time it specifies.  For example,
 with 30 minute intervals and a timestamp of C<12:10:30>, the interval
 is I<not> C<12:10:30> to C<12:40:30>, it is C<12:00:00> to C<12:29:59>.
-Or, with 1 hour interavals, it is C<12:00:00> to C<12:59:59>.
+Or, with 1 hour intervals, it is C<12:00:00> to C<12:59:59>.
 When a new timestamp exceeds the interval, a report is printed, and the
 next interval is recalculated based on the new timestamp.
 
@@ -15393,7 +15564,36 @@ Socket file to use for connection.
 
 =item --statistics
 
-Print statistics.
+Print statistics about internal counters.  This option is mostly for
+development and debugging.  The statistics report is printed for each
+iteration after all other reports, even if no events are processed or
+C<--no-report> is specified.  The statistics report looks like:
+
+   # No events processed.
+
+   # Statistic                                        Count  %/Events
+   # ================================================ ====== ========
+   # events_read                                      142030   100.00
+   # events_parsed                                     50430    35.51
+   # events_aggregated                                     0     0.00
+   # ignored_midstream_server_response                 18111    12.75
+   # no_tcp_data                                       91600    64.49
+   # pipeline_restarted_after_MemcachedProtocolParser 142030   100.00
+   # pipeline_restarted_after_TcpdumpParser                1     0.00
+   # unknown_client_command                                1     0.00
+   # unknown_client_data                               32318    22.75
+
+The first column is the internal counter name; the second column is counter's
+count; and the third column is the count as a percentage of C<events_read>.
+
+In this case, it shows why no events were processed/aggregated: 100% of events
+were rejected by the C<MemcachedProtocolParser>.  Of those, 35.51% were data
+packets, but of these 12.75% of ignored mid-stream server response, one was
+an unknown client command, and 22.75% were unknown client data.  The other
+64.49% were TCP control packets (probably most ACKs).
+
+Since mk-query-digest is complex, you will probably need someone familiar
+with its code to decipher the statistics report.
 
 =item --table-access
 
@@ -15464,6 +15664,10 @@ The type of input to parse (default slowlog).  The permitted types are
 =item binlog
 
 Parse a binary log file.
+
+=item drizzlelog
+
+Parse a Drizzle query log created by the query_log plugin.
 
 =item genlog
 
@@ -15536,7 +15740,7 @@ The parser expects the input to be formatted with the following options: C<-x -n
 -q -tttt>.  For example, if you want to capture output from your local machine,
 you can do something like the following (the port must come last on FreeBSD):
 
-  tcpdump -s 65535 -x -nn -q -tttt -i eth0 -c 1000 port 3306 \
+  tcpdump -s 65535 -x -nn -q -tttt -i any -c 1000 port 3306 \
     > mysql.tcp.txt
   mk-query-digest --type tcpdump mysql.tcp.txt
 
@@ -15553,6 +15757,16 @@ Remember tcpdump has a handy -c option to stop after it captures some number of
 packets!  That's very useful for testing your tcpdump command.  Note that
 tcpdump can't capture traffic on a Unix socket.  Read
 L<http://bugs.mysql.com/bug.php?id=31577> if you're confused about this.
+
+Devananda Van Der Veen explained on the MySQL Performance Blog how to capture
+traffic without dropping packets on busy servers.  Dropped packets cause
+mk-query-digest to miss the response to a request, then see the response to a
+later request and assign the wrong execution time to the query.  You can change
+the filter to something like the following to help capture a subset of the
+queries.  (See L<http://www.mysqlperformanceblog.com/?p=6092> for details.)
+
+  tcpdump -i any -s 65535 -x -n -q -tttt \
+     'port 3306 and tcp[1] & 7 == 2 and tcp[3] & 7 == 2'
 
 All MySQL servers running on port 3306 are automatically detected in the
 tcpdump output.  Therefore, if the tcpdump out contains packets from
@@ -15577,7 +15791,7 @@ inspected and decoded.
 Similar to tcpdump, but the expected input is memcached packets
 instead of MySQL packets.  For example:
 
-  tcpdump -i eth0 port 11211 -s 65535 -x -nn -q -tttt \
+  tcpdump -i any port 11211 -s 65535 -x -nn -q -tttt \
     > memcached.tcp.txt
   mk-query-digest --type memcached memcached.tcp.txt
 
@@ -15756,7 +15970,7 @@ reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-query-digest>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-query-digest>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -15774,7 +15988,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -15799,6 +16013,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7628 $.
 
 =cut

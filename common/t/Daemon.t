@@ -27,7 +27,7 @@ my $cmd     = "$trunk/common/t/samples/daemonizes.pl";
 my $ret_val = system("$cmd 2 --daemonize --pid $pid_file");
 SKIP: {
    skip 'Cannot test Daemon.pm because t/daemonizes.pl is not working',
-      18 unless $ret_val == 0;
+      19 unless $ret_val == 0;
 
    my $output = `ps wx | grep '$cmd 2' | grep -v grep`;
    like($output, qr/$cmd/, 'Daemonizes');
@@ -122,7 +122,7 @@ SKIP: {
    # Issue 419: Daemon should check wether process with pid obtained from
    # pid-file is still running
    # ##########################################################################
-   $output = `$cmd 5 --daemonize --pid $pid_file 2>&1`;
+   system("$cmd 5 --daemonize --pid $pid_file 2>&1");
    chomp($pid = `cat $pid_file`);
    kill 9, $pid;
    $output = `ps wax | grep $pid | grep -v grep`;

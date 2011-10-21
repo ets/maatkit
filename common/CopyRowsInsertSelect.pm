@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# CopyRowsInsertSelect package $Revision$
+# CopyRowsInsertSelect package $Revision: 7464 $
 # ###########################################################################
 
 # Package: CopyRowsInsertSelect
@@ -51,11 +51,11 @@ sub new {
 
 sub copy {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh msg old_table new_table chunks columns);
+   my @required_args = qw(dbh msg from_table to_table chunks columns);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $msg, $old_table, $new_table, $chunks) = @args{@required_args};
+   my ($dbh, $msg, $from_table, $to_table, $chunks) = @args{@required_args};
    my $pr       = $args{Progress};
    my $sleep    = $args{sleep};
    my $columns  = join(', ', @{$args{columns}});
@@ -67,8 +67,8 @@ sub copy {
          next;
       }
 
-      my $sql = "INSERT IGNORE INTO $new_table ($columns) "
-              . "SELECT $columns FROM $old_table "
+      my $sql = "INSERT IGNORE INTO $to_table ($columns) "
+              . "SELECT $columns FROM $from_table "
               . "WHERE ($chunks->[$chunkno])"
               . ($args{where}        ? " AND ($args{where})"  : "")
               . ($args{engine_flags} ? " $args{engine_flags}" : "");
@@ -79,6 +79,7 @@ sub copy {
          $msg->($sql);
       }
       else {
+         MKDEBUG && _d($dbh, $sql);
          my $error;
          $self->{Retry}->retry(
             wait  => sub { sleep 1; },

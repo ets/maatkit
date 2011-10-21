@@ -1,0 +1,9 @@
+Changelog for mk-table-usage:
+
+2011-06-08: version 1.0.1
+
+   * Added --create-table-definitions option (issue 1316).
+
+2011-05-05: version 1.0.0
+
+   * Initial release.

@@ -155,7 +155,7 @@ start_query_table(qw(mkosc a i));
 $output = output(
    sub { $exit = mk_online_schema_change::main(@args,
       qw(--chunk-size 100),
-      'D=mkosc,t=a', qw(--alter-new-table ENGINE=InnoDB --drop-old-table)) },
+      'D=mkosc,t=a', qw(--alter ENGINE=InnoDB --drop-old-table)) },
 );
 stop_query_table();
 

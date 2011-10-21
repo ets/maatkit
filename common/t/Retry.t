@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 13;
+use Test::More tests => 14;
 
 use Retry;
 use MaatkitTest;
@@ -26,7 +26,7 @@ my $rt = new Retry();
 my $try = sub {
    if ( $die ) {
       $die = 0;
-      die "Arrrgh!";
+      die "I die!\n";
    }
    return $tryno++ == $tries ? "succeed" : undef;
 };
@@ -97,7 +97,13 @@ is(
 
 # Test what happens if the try code dies.  try_it() will reset $die to 0.
 $die = 1;
-try_it();
+eval { try_it(); };
+is(
+   $EVAL_ERROR,
+   "I die!\n",
+   "Dies if code dies without retry_on_die"
+);
+
 ok(
    !defined $retval,
    "Returned undef on try die"

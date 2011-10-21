@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -22,7 +22,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7477 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -1046,7 +1046,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ReportFormatter package 7359
+# ReportFormatter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ReportFormatter.pm
@@ -2534,7 +2534,7 @@ can also supply your own patterns with the L<"--load-patterns"> option.
 
 =head1 OUTPUT
 
-The output is a simple tabular list of error log entires:
+The output is a simple tabular list of error log entries:
 
   Count Level   Message                                           
   ===== ======= ==================================================
@@ -2546,7 +2546,7 @@ The output is a simple tabular list of error log entires:
       1 error   [ERROR] /usr/sbin/mysqld: unknown variable 'ssl-ke
       1 error   [ERROR] Failed to initialize the master info struc
 
-The log entries (Message) are usually truncated; the full entrie is not
+The log entries (Message) are usually truncated; the full entry is not
 always shown.
 
 =head1 OPTIONS
@@ -2798,7 +2798,7 @@ You need the following Perl modules: DBI and DBD::mysql.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-error-log>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-error-log>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -2816,7 +2816,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -2841,6 +2841,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7477 $.
 
 =cut

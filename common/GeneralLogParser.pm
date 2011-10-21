@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# GeneralLogParser package $Revision$
+# GeneralLogParser package $Revision: 7522 $
 # ###########################################################################
 package GeneralLogParser;
 
@@ -162,6 +162,10 @@ sub parse_event {
       # be gone.
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 

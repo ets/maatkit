@@ -1,5 +1,14 @@
 Changelog for mk-table-checksum and mk-checksum-filter:
 
+2011-06-08: version 1.2.23
+
+   * --wait did not work (issue 1319).
+   * Invalid --throttle-method values did not cause an error (issue 1309).
+
+2011-05-05: version 1.2.22
+
+   * --recurse did not work (issue 1039).
+
 2011-04-04: version 1.2.21
 
    * --sleep slept after the last or only chunk (issue 1256).

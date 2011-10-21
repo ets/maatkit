@@ -19,28 +19,42 @@ my $dp = new DSNParser(opts=>$dsn_opts);
 my $vp = new VersionParser();
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
 my $master_dbh = $sb->get_dbh_for('master');
+my $slave_dbh  = $sb->get_dbh_for('slave1');
 
 if ( !$master_dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
+elsif ( !$slave_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox slave';
+}
 else {
-   plan tests => 3;
+   plan tests => 5;
 }
 
 my $output;
 my $cnf='/tmp/12345/my.sandbox.cnf';
 my $cmd = "$trunk/mk-table-checksum/mk-table-checksum -F $cnf 127.0.0.1";
 
+$sb->wipe_clean($master_dbh);
 $sb->create_dbs($master_dbh, [qw(test)]);
-$sb->load_file('master', 'mk-table-checksum/t/samples/before.sql');
-$sb->load_file('master', 'mk-table-checksum/t/samples/checksum_tbl.sql');
 
 # #############################################################################
 # Issue 77: mk-table-checksum should be able to create the --replicate table
 # #############################################################################
 
+is_deeply(
+   $master_dbh->selectall_arrayref('show tables from test'),
+   [],
+   "Checksum table does not exist on master"
+);
+
+is_deeply(
+   $slave_dbh->selectall_arrayref('show tables from test'),
+   [],
+   "Checksum table does not exist on slave"
+);
+
 # First check that, like a Klingon, it dies with honor.
-`/tmp/12345/use -e 'DROP TABLE test.checksum'`;
 $output = `$cmd --replicate test.checksum 2>&1`;
 like(
    $output,
@@ -48,11 +62,10 @@ like(
    'Dies with honor when replication table does not exist'
 );
 
-$output = `$cmd --ignore-databases sakila --replicate test.checksum --create-replicate-table`;
-like(
-   $output,
-   qr/DATABASE\s+TABLE\s+CHUNK/,
-   '--create-replicate-table creates the replicate table'
+output(
+   sub { mk_table_checksum::main('-F', $cnf,
+      qw(--create-replicate-table --replicate test.checksum 127.1)) },
+   stderr => 0,
 );
 
 # In 5.0 "on" in "on update" is lowercase, in 5.1 it's uppercase.
@@ -78,6 +91,15 @@ is(
    lc($master_dbh->selectrow_hashref('show create table test.checksum')->{'create table'}),
    $create_tbl,
    'Creates the replicate table'
+);
+
+# ############################################################################
+# Issue 1318: mk-tabke-checksum --create-replicate-table doesn't replicate
+# ############################################################################
+is(
+   lc($slave_dbh->selectrow_hashref('show create table test.checksum')->{'create table'}),
+   $create_tbl,
+   'Creates the replicate table replicates (issue 1318)'
 );
 
 # #############################################################################

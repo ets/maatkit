@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -25,7 +25,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7477 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # VersionParser package 6667
@@ -3913,7 +3913,7 @@ it finds indexes that cover the same columns as another index in the same
 order, or cover an exact leftmost prefix of another index, it prints out
 the suspicious indexes.  By default, indexes must be of the same type, so a
 BTREE index is not a duplicate of a FULLTEXT index, even if they have the same
-colums.  You can override this.
+columns.  You can override this.
 
 It also looks for duplicate foreign keys.  A duplicate foreign key covers the
 same columns as another in the same table, and references the same parent
@@ -3980,7 +3980,7 @@ The tool suggests shortening duplicate clustered keys by dropping the key
 and re-adding it without the primary key prefix.  The shortened clustered
 key may still duplicate another key, but the tool cannot currently detect
 when this happens without being ran a second time to re-check the newly
-shortened clustered keys.  Therefore, if you shorten any duplicate clusterted
+shortened clustered keys.  Therefore, if you shorten any duplicate clustered
 keys, you should run the tool again.
 
 =item --config
@@ -4215,7 +4215,7 @@ You need the following Perl modules: DBI and DBD::mysql.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-duplicate-key-checker>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-duplicate-key-checker>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -4233,7 +4233,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -4258,6 +4258,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7477 $.
 
 =cut

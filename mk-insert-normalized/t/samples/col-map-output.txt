@@ -1,0 +1,35 @@
+-- Source: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=a
+-- Dest: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=z
+-- INSERT table order:
+--   test.y
+--   test.z
+-- Column test.a.col1 maps to column test.z.cola
+-- Foreign key column test.z.fk_col maps to column test.y.id
+-- Column test.a.col3 maps to column test.z.three
+-- Column test.a.col2 maps to column test.y.col2
+-- Column test.a.col1 maps to column test.y.col1
+-- SELECT /*!40001 SQL_NO_CACHE */ col1, col2, col3, id FROM `test`.`a` FORCE INDEX(`PRIMARY`) LIMIT 100
+-- SELECT /*!40001 SQL_NO_CACHE */ col1, col2, col3, id FROM `test`.`a` FORCE INDEX(`PRIMARY`) WHERE ((`id` > ?)) LIMIT 100
+-- INSERT INTO `test`.`y` (col1, col2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- INSERT INTO `test`.`z` (cola, three, fk_col) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+SELECT /*!40001 SQL_NO_CACHE */ col1, col2, col3, id FROM `test`.`a` FORCE INDEX(`PRIMARY`) LIMIT 100
+-- Bind values: 
+START TRANSACTION
+INSERT INTO `test`.`y` (col1, col2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 1, 1
+SELECT id AS fk_col FROM test.y WHERE id=? LIMIT 1
+INSERT INTO `test`.`z` (cola, three, fk_col) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 1, 1, 1
+INSERT INTO `test`.`y` (col1, col2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 2, 2
+SELECT id AS fk_col FROM test.y WHERE id=? LIMIT 1
+INSERT INTO `test`.`z` (cola, three, fk_col) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 2, 2, 2
+INSERT INTO `test`.`y` (col1, col2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 3, 3
+SELECT id AS fk_col FROM test.y WHERE id=? LIMIT 1
+INSERT INTO `test`.`z` (cola, three, fk_col) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.a txn_size:100 pid:0 user:test */
+-- Bind values: 3, 3, 3
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ col1, col2, col3, id FROM `test`.`a` FORCE INDEX(`PRIMARY`) WHERE ((`id` > ?)) LIMIT 100
+-- Bind values: 3

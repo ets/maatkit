@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -22,7 +22,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7531 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -1046,7 +1046,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -1216,6 +1216,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -1239,7 +1243,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# BinaryLogParser package 6785
+# BinaryLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/BinaryLogParser.pm
@@ -1412,6 +1416,10 @@ sub parse_event {
       if ( $found_arg ) {
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {
@@ -1438,7 +1446,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# GeneralLogParser package 7096
+# GeneralLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/GeneralLogParser.pm
@@ -1572,6 +1580,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 
@@ -3086,7 +3098,7 @@ being split.
 
 A session is a group of queries from the slow log that all share a common
 attribute, usually Thread_id.  The common attribute is specified with
-L<"--split">.  Multiple sessions are saved into a single sesssion file.
+L<"--split">.  Multiple sessions are saved into a single session file.
 See L<"--session-files">, L<"--max-sessions">, L<"--base-file-name"> and
 L<"--base-dir">.  These session files are played with L<"--play">.
 
@@ -3229,7 +3241,7 @@ The second way to supply your code is in a file.  If your code is too complex
 to be expressed on the command line that results in valid syntax in the
 subroutine above, then you need to put the code in a file and give the file
 name as the value to L<"--filter">.  The file should not contain a shebang
-(C<#!/usr/bin/perl>) line.  The entire contents of the file is injeted into
+(C<#!/usr/bin/perl>) line.  The entire contents of the file is injected into
 the following subroutine:
 
    sub {
@@ -3257,7 +3269,7 @@ becomes:
    $event_ok && return $event;
 
 If your code doesn't compile, the tool will die with an error.  Even if your
-code compmiles, it may crash to tool during runtime if, for example, it tries
+code compiles, it may crash to tool during runtime if, for example, it tries
 a pattern match an undefined value.  No safeguards of any kind of provided so
 code carefully!
 
@@ -3321,7 +3333,7 @@ type: string; group: Play
 
 Play (execute) session files created by L<"--split">.
 
-The argument to play must be a commaxn-separated list of session files
+The argument to play must be a comma-separated list of session files
 created by L<"--split"> or a directory.  If the argument is a directory,
 ALL files in that directory will be played.
 
@@ -3446,7 +3458,7 @@ Split a general log file.
 
 =item slowlog
 
-Split a log file in any varation of MySQL slow-log format.
+Split a log file in any variation of MySQL slow-log format.
 
 =back
 
@@ -3460,7 +3472,7 @@ User for login if not current user.
 
 short form: -v; cumulative: yes; default: 0
 
-Increase verbosity; can specifiy multiple times.
+Increase verbosity; can be specified multiple times.
 
 This option is disabled by L<"--quiet">.
 
@@ -3577,7 +3589,7 @@ reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-log-player>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-log-player>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -3595,7 +3607,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -3620,6 +3632,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7531 $.
 
 =cut

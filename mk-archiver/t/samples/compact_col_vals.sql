@@ -51,3 +51,29 @@ insert into `r` values
    (13, 'three hundred'),
    (14, 'three hundred four'),
    (15, 'three hundred five');
+
+-- Second test: lowest auto-inc val isn't 1.
+-- After compacting, t2 should result in r.
+
+CREATE TABLE `t2` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `c` varchar(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+
+insert into `t2` values
+   (9,  'one'),
+   (10, 'two'),
+   (11, 'three'),
+   (15, 'four'),
+   (17, 'five'),
+   (20, 'nine'),
+   (21, 'eleven'),
+   (22, 'thirteen'),
+   (24, 'fourteen'),
+   (50, 'fifty'),
+   (51, 'fifty one'),
+   (200, 'two hundred'),
+   (300, 'three hundred'),
+   (304, 'three hundred four'),
+   (305, 'three hundred five');

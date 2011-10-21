@@ -26,6 +26,7 @@ use threads;
 use Thread::Queue;
 use Time::HiRes;
 use Time::Local;
+use Digest::Crc32;
 
 my $file    = __FILE__;
 my $m       = `cat $file | grep '^use'`;

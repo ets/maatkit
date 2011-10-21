@@ -1,0 +1,5357 @@
+#!/usr/bin/env perl
+
+# This program is copyright 2011 Percona Inc.
+# Feedback and improvements are welcome.
+#
+# THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 2; OR the Perl Artistic License.  On UNIX and similar
+# systems, you can issue `man perlgpl' or `man perlartistic' to read these
+# licenses.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc., 59 Temple
+# Place, Suite 330, Boston, MA  02111-1307  USA.
+
+use strict;
+use warnings FATAL => 'all';
+
+our $VERSION = '@VERSION@';
+our $DISTRIB = '@DISTRIB@';
+our $SVN_REV = sprintf("%d", (q$Revision: 7625 $ =~ m/(\d+)/g, 0));
+
+# ###########################################################################
+# OptionParser package 7102
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/OptionParser.pm
+#   trunk/common/t/OptionParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package OptionParser;
+
+use strict;
+use warnings FATAL => 'all';
+use List::Util qw(max);
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Getopt::Long;
+
+my $POD_link_re = '[LC]<"?([^">]+)"?>';
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my ($program_name) = $PROGRAM_NAME =~ m/([.A-Za-z-]+)$/;
+   $program_name ||= $PROGRAM_NAME;
+   my $home = $ENV{HOME} || $ENV{HOMEPATH} || $ENV{USERPROFILE} || '.';
+
+   my %attributes = (
+      'type'       => 1,
+      'short form' => 1,
+      'group'      => 1,
+      'default'    => 1,
+      'cumulative' => 1,
+      'negatable'  => 1,
+   );
+
+   my $self = {
+      head1             => 'OPTIONS',        # These args are used internally
+      skip_rules        => 0,                # to instantiate another Option-
+      item              => '--(.*)',         # Parser obj that parses the
+      attributes        => \%attributes,     # DSN OPTIONS section.  Tools
+      parse_attributes  => \&_parse_attribs, # don't tinker with these args.
+
+      %args,
+
+      strict            => 1,  # disabled by a special rule
+      program_name      => $program_name,
+      opts              => {},
+      got_opts          => 0,
+      short_opts        => {},
+      defaults          => {},
+      groups            => {},
+      allowed_groups    => {},
+      errors            => [],
+      rules             => [],  # desc of rules for --help
+      mutex             => [],  # rule: opts are mutually exclusive
+      atleast1          => [],  # rule: at least one opt is required
+      disables          => {},  # rule: opt disables other opts 
+      defaults_to       => {},  # rule: opt defaults to value of other opt
+      DSNParser         => undef,
+      default_files     => [
+         "/etc/maatkit/maatkit.conf",
+         "/etc/maatkit/$program_name.conf",
+         "$home/.maatkit.conf",
+         "$home/.$program_name.conf",
+      ],
+      types             => {
+         string => 's', # standard Getopt type
+         int    => 'i', # standard Getopt type
+         float  => 'f', # standard Getopt type
+         Hash   => 'H', # hash, formed from a comma-separated list
+         hash   => 'h', # hash as above, but only if a value is given
+         Array  => 'A', # array, similar to Hash
+         array  => 'a', # array, similar to hash
+         DSN    => 'd', # DSN
+         size   => 'z', # size with kMG suffix (powers of 2^10)
+         time   => 'm', # time, with an optional suffix of s/h/m/d
+      },
+   };
+
+   return bless $self, $class;
+}
+
+sub get_specs {
+   my ( $self, $file ) = @_;
+   $file ||= $self->{file} || __FILE__;
+   my @specs = $self->_pod_to_specs($file);
+   $self->_parse_specs(@specs);
+
+   open my $fh, "<", $file or die "Cannot open $file: $OS_ERROR";
+   my $contents = do { local $/ = undef; <$fh> };
+   close $fh;
+   if ( $contents =~ m/^=head1 DSN OPTIONS/m ) {
+      MKDEBUG && _d('Parsing DSN OPTIONS');
+      my $dsn_attribs = {
+         dsn  => 1,
+         copy => 1,
+      };
+      my $parse_dsn_attribs = sub {
+         my ( $self, $option, $attribs ) = @_;
+         map {
+            my $val = $attribs->{$_};
+            if ( $val ) {
+               $val    = $val eq 'yes' ? 1
+                       : $val eq 'no'  ? 0
+                       :                 $val;
+               $attribs->{$_} = $val;
+            }
+         } keys %$attribs;
+         return {
+            key => $option,
+            %$attribs,
+         };
+      };
+      my $dsn_o = new OptionParser(
+         description       => 'DSN OPTIONS',
+         head1             => 'DSN OPTIONS',
+         dsn               => 0,         # XXX don't infinitely recurse!
+         item              => '\* (.)',  # key opts are a single character
+         skip_rules        => 1,         # no rules before opts
+         attributes        => $dsn_attribs,
+         parse_attributes  => $parse_dsn_attribs,
+      );
+      my @dsn_opts = map {
+         my $opts = {
+            key  => $_->{spec}->{key},
+            dsn  => $_->{spec}->{dsn},
+            copy => $_->{spec}->{copy},
+            desc => $_->{desc},
+         };
+         $opts;
+      } $dsn_o->_pod_to_specs($file);
+      $self->{DSNParser} = DSNParser->new(opts => \@dsn_opts);
+   }
+
+   return;
+}
+
+sub DSNParser {
+   my ( $self ) = @_;
+   return $self->{DSNParser};
+};
+
+sub get_defaults_files {
+   my ( $self ) = @_;
+   return @{$self->{default_files}};
+}
+
+sub _pod_to_specs {
+   my ( $self, $file ) = @_;
+   $file ||= $self->{file} || __FILE__;
+   open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+
+   my @specs = ();
+   my @rules = ();
+   my $para;
+
+   local $INPUT_RECORD_SEPARATOR = '';
+   while ( $para = <$fh> ) {
+      next unless $para =~ m/^=head1 $self->{head1}/;
+      last;
+   }
+
+   while ( $para = <$fh> ) {
+      last if $para =~ m/^=over/;
+      next if $self->{skip_rules};
+      chomp $para;
+      $para =~ s/\s+/ /g;
+      $para =~ s/$POD_link_re/$1/go;
+      MKDEBUG && _d('Option rule:', $para);
+      push @rules, $para;
+   }
+
+   die "POD has no $self->{head1} section" unless $para;
+
+   do {
+      if ( my ($option) = $para =~ m/^=item $self->{item}/ ) {
+         chomp $para;
+         MKDEBUG && _d($para);
+         my %attribs;
+
+         $para = <$fh>; # read next paragraph, possibly attributes
+
+         if ( $para =~ m/: / ) { # attributes
+            $para =~ s/\s+\Z//g;
+            %attribs = map {
+                  my ( $attrib, $val) = split(/: /, $_);
+                  die "Unrecognized attribute for --$option: $attrib"
+                     unless $self->{attributes}->{$attrib};
+                  ($attrib, $val);
+               } split(/; /, $para);
+            if ( $attribs{'short form'} ) {
+               $attribs{'short form'} =~ s/-//;
+            }
+            $para = <$fh>; # read next paragraph, probably short help desc
+         }
+         else {
+            MKDEBUG && _d('Option has no attributes');
+         }
+
+         $para =~ s/\s+\Z//g;
+         $para =~ s/\s+/ /g;
+         $para =~ s/$POD_link_re/$1/go;
+
+         $para =~ s/\.(?:\n.*| [A-Z].*|\Z)//s;
+         MKDEBUG && _d('Short help:', $para);
+
+         die "No description after option spec $option" if $para =~ m/^=item/;
+
+         if ( my ($base_option) =  $option =~ m/^\[no\](.*)/ ) {
+            $option = $base_option;
+            $attribs{'negatable'} = 1;
+         }
+
+         push @specs, {
+            spec  => $self->{parse_attributes}->($self, $option, \%attribs), 
+            desc  => $para
+               . (defined $attribs{default} ? " (default $attribs{default})" : ''),
+            group => ($attribs{'group'} ? $attribs{'group'} : 'default'),
+         };
+      }
+      while ( $para = <$fh> ) {
+         last unless $para;
+         if ( $para =~ m/^=head1/ ) {
+            $para = undef; # Can't 'last' out of a do {} block.
+            last;
+         }
+         last if $para =~ m/^=item /;
+      }
+   } while ( $para );
+
+   die "No valid specs in $self->{head1}" unless @specs;
+
+   close $fh;
+   return @specs, @rules;
+}
+
+sub _parse_specs {
+   my ( $self, @specs ) = @_;
+   my %disables; # special rule that requires deferred checking
+
+   foreach my $opt ( @specs ) {
+      if ( ref $opt ) { # It's an option spec, not a rule.
+         MKDEBUG && _d('Parsing opt spec:',
+            map { ($_, '=>', $opt->{$_}) } keys %$opt);
+
+         my ( $long, $short ) = $opt->{spec} =~ m/^([\w-]+)(?:\|([^!+=]*))?/;
+         if ( !$long ) {
+            die "Cannot parse long option from spec $opt->{spec}";
+         }
+         $opt->{long} = $long;
+
+         die "Duplicate long option --$long" if exists $self->{opts}->{$long};
+         $self->{opts}->{$long} = $opt;
+
+         if ( length $long == 1 ) {
+            MKDEBUG && _d('Long opt', $long, 'looks like short opt');
+            $self->{short_opts}->{$long} = $long;
+         }
+
+         if ( $short ) {
+            die "Duplicate short option -$short"
+               if exists $self->{short_opts}->{$short};
+            $self->{short_opts}->{$short} = $long;
+            $opt->{short} = $short;
+         }
+         else {
+            $opt->{short} = undef;
+         }
+
+         $opt->{is_negatable}  = $opt->{spec} =~ m/!/        ? 1 : 0;
+         $opt->{is_cumulative} = $opt->{spec} =~ m/\+/       ? 1 : 0;
+         $opt->{is_required}   = $opt->{desc} =~ m/required/ ? 1 : 0;
+
+         $opt->{group} ||= 'default';
+         $self->{groups}->{ $opt->{group} }->{$long} = 1;
+
+         $opt->{value} = undef;
+         $opt->{got}   = 0;
+
+         my ( $type ) = $opt->{spec} =~ m/=(.)/;
+         $opt->{type} = $type;
+         MKDEBUG && _d($long, 'type:', $type);
+
+
+         $opt->{spec} =~ s/=./=s/ if ( $type && $type =~ m/[HhAadzm]/ );
+
+         if ( (my ($def) = $opt->{desc} =~ m/default\b(?: ([^)]+))?/) ) {
+            $self->{defaults}->{$long} = defined $def ? $def : 1;
+            MKDEBUG && _d($long, 'default:', $def);
+         }
+
+         if ( $long eq 'config' ) {
+            $self->{defaults}->{$long} = join(',', $self->get_defaults_files());
+         }
+
+         if ( (my ($dis) = $opt->{desc} =~ m/(disables .*)/) ) {
+            $disables{$long} = $dis;
+            MKDEBUG && _d('Deferring check of disables rule for', $opt, $dis);
+         }
+
+         $self->{opts}->{$long} = $opt;
+      }
+      else { # It's an option rule, not a spec.
+         MKDEBUG && _d('Parsing rule:', $opt); 
+         push @{$self->{rules}}, $opt;
+         my @participants = $self->_get_participants($opt);
+         my $rule_ok = 0;
+
+         if ( $opt =~ m/mutually exclusive|one and only one/ ) {
+            $rule_ok = 1;
+            push @{$self->{mutex}}, \@participants;
+            MKDEBUG && _d(@participants, 'are mutually exclusive');
+         }
+         if ( $opt =~ m/at least one|one and only one/ ) {
+            $rule_ok = 1;
+            push @{$self->{atleast1}}, \@participants;
+            MKDEBUG && _d(@participants, 'require at least one');
+         }
+         if ( $opt =~ m/default to/ ) {
+            $rule_ok = 1;
+            $self->{defaults_to}->{$participants[0]} = $participants[1];
+            MKDEBUG && _d($participants[0], 'defaults to', $participants[1]);
+         }
+         if ( $opt =~ m/restricted to option groups/ ) {
+            $rule_ok = 1;
+            my ($groups) = $opt =~ m/groups ([\w\s\,]+)/;
+            my @groups = split(',', $groups);
+            %{$self->{allowed_groups}->{$participants[0]}} = map {
+               s/\s+//;
+               $_ => 1;
+            } @groups;
+         }
+         if( $opt =~ m/accepts additional command-line arguments/ ) {
+            $rule_ok = 1;
+            $self->{strict} = 0;
+            MKDEBUG && _d("Strict mode disabled by rule");
+         }
+
+         die "Unrecognized option rule: $opt" unless $rule_ok;
+      }
+   }
+
+   foreach my $long ( keys %disables ) {
+      my @participants = $self->_get_participants($disables{$long});
+      $self->{disables}->{$long} = \@participants;
+      MKDEBUG && _d('Option', $long, 'disables', @participants);
+   }
+
+   return; 
+}
+
+sub _get_participants {
+   my ( $self, $str ) = @_;
+   my @participants;
+   foreach my $long ( $str =~ m/--(?:\[no\])?([\w-]+)/g ) {
+      die "Option --$long does not exist while processing rule $str"
+         unless exists $self->{opts}->{$long};
+      push @participants, $long;
+   }
+   MKDEBUG && _d('Participants for', $str, ':', @participants);
+   return @participants;
+}
+
+sub opts {
+   my ( $self ) = @_;
+   my %opts = %{$self->{opts}};
+   return %opts;
+}
+
+sub short_opts {
+   my ( $self ) = @_;
+   my %short_opts = %{$self->{short_opts}};
+   return %short_opts;
+}
+
+sub set_defaults {
+   my ( $self, %defaults ) = @_;
+   $self->{defaults} = {};
+   foreach my $long ( keys %defaults ) {
+      die "Cannot set default for nonexistent option $long"
+         unless exists $self->{opts}->{$long};
+      $self->{defaults}->{$long} = $defaults{$long};
+      MKDEBUG && _d('Default val for', $long, ':', $defaults{$long});
+   }
+   return;
+}
+
+sub get_defaults {
+   my ( $self ) = @_;
+   return $self->{defaults};
+}
+
+sub get_groups {
+   my ( $self ) = @_;
+   return $self->{groups};
+}
+
+sub _set_option {
+   my ( $self, $opt, $val ) = @_;
+   my $long = exists $self->{opts}->{$opt}       ? $opt
+            : exists $self->{short_opts}->{$opt} ? $self->{short_opts}->{$opt}
+            : die "Getopt::Long gave a nonexistent option: $opt";
+
+   $opt = $self->{opts}->{$long};
+   if ( $opt->{is_cumulative} ) {
+      $opt->{value}++;
+   }
+   else {
+      $opt->{value} = $val;
+   }
+   $opt->{got} = 1;
+   MKDEBUG && _d('Got option', $long, '=', $val);
+}
+
+sub get_opts {
+   my ( $self ) = @_; 
+
+   foreach my $long ( keys %{$self->{opts}} ) {
+      $self->{opts}->{$long}->{got} = 0;
+      $self->{opts}->{$long}->{value}
+         = exists $self->{defaults}->{$long}       ? $self->{defaults}->{$long}
+         : $self->{opts}->{$long}->{is_cumulative} ? 0
+         : undef;
+   }
+   $self->{got_opts} = 0;
+
+   $self->{errors} = [];
+
+   if ( @ARGV && $ARGV[0] eq "--config" ) {
+      shift @ARGV;
+      $self->_set_option('config', shift @ARGV);
+   }
+   if ( $self->has('config') ) {
+      my @extra_args;
+      foreach my $filename ( split(',', $self->get('config')) ) {
+         eval {
+            push @extra_args, $self->_read_config_file($filename);
+         };
+         if ( $EVAL_ERROR ) {
+            if ( $self->got('config') ) {
+               die $EVAL_ERROR;
+            }
+            elsif ( MKDEBUG ) {
+               _d($EVAL_ERROR);
+            }
+         }
+      }
+      unshift @ARGV, @extra_args;
+   }
+
+   Getopt::Long::Configure('no_ignore_case', 'bundling');
+   GetOptions(
+      map    { $_->{spec} => sub { $self->_set_option(@_); } }
+      grep   { $_->{long} ne 'config' } # --config is handled specially above.
+      values %{$self->{opts}}
+   ) or $self->save_error('Error parsing options');
+
+   if ( exists $self->{opts}->{version} && $self->{opts}->{version}->{got} ) {
+      printf("%s  Ver %s Distrib %s Changeset %s\n",
+         $self->{program_name}, $main::VERSION, $main::DISTRIB, $main::SVN_REV)
+            or die "Cannot print: $OS_ERROR";
+      exit 0;
+   }
+
+   if ( @ARGV && $self->{strict} ) {
+      $self->save_error("Unrecognized command-line options @ARGV");
+   }
+
+   foreach my $mutex ( @{$self->{mutex}} ) {
+      my @set = grep { $self->{opts}->{$_}->{got} } @$mutex;
+      if ( @set > 1 ) {
+         my $err = join(', ', map { "--$self->{opts}->{$_}->{long}" }
+                      @{$mutex}[ 0 .. scalar(@$mutex) - 2] )
+                 . ' and --'.$self->{opts}->{$mutex->[-1]}->{long}
+                 . ' are mutually exclusive.';
+         $self->save_error($err);
+      }
+   }
+
+   foreach my $required ( @{$self->{atleast1}} ) {
+      my @set = grep { $self->{opts}->{$_}->{got} } @$required;
+      if ( @set == 0 ) {
+         my $err = join(', ', map { "--$self->{opts}->{$_}->{long}" }
+                      @{$required}[ 0 .. scalar(@$required) - 2] )
+                 .' or --'.$self->{opts}->{$required->[-1]}->{long};
+         $self->save_error("Specify at least one of $err");
+      }
+   }
+
+   $self->_check_opts( keys %{$self->{opts}} );
+   $self->{got_opts} = 1;
+   return;
+}
+
+sub _check_opts {
+   my ( $self, @long ) = @_;
+   my $long_last = scalar @long;
+   while ( @long ) {
+      foreach my $i ( 0..$#long ) {
+         my $long = $long[$i];
+         next unless $long;
+         my $opt  = $self->{opts}->{$long};
+         if ( $opt->{got} ) {
+            if ( exists $self->{disables}->{$long} ) {
+               my @disable_opts = @{$self->{disables}->{$long}};
+               map { $self->{opts}->{$_}->{value} = undef; } @disable_opts;
+               MKDEBUG && _d('Unset options', @disable_opts,
+                  'because', $long,'disables them');
+            }
+
+            if ( exists $self->{allowed_groups}->{$long} ) {
+
+               my @restricted_groups = grep {
+                  !exists $self->{allowed_groups}->{$long}->{$_}
+               } keys %{$self->{groups}};
+
+               my @restricted_opts;
+               foreach my $restricted_group ( @restricted_groups ) {
+                  RESTRICTED_OPT:
+                  foreach my $restricted_opt (
+                     keys %{$self->{groups}->{$restricted_group}} )
+                  {
+                     next RESTRICTED_OPT if $restricted_opt eq $long;
+                     push @restricted_opts, $restricted_opt
+                        if $self->{opts}->{$restricted_opt}->{got};
+                  }
+               }
+
+               if ( @restricted_opts ) {
+                  my $err;
+                  if ( @restricted_opts == 1 ) {
+                     $err = "--$restricted_opts[0]";
+                  }
+                  else {
+                     $err = join(', ',
+                               map { "--$self->{opts}->{$_}->{long}" }
+                               grep { $_ } 
+                               @restricted_opts[0..scalar(@restricted_opts) - 2]
+                            )
+                          . ' or --'.$self->{opts}->{$restricted_opts[-1]}->{long};
+                  }
+                  $self->save_error("--$long is not allowed with $err");
+               }
+            }
+
+         }
+         elsif ( $opt->{is_required} ) { 
+            $self->save_error("Required option --$long must be specified");
+         }
+
+         $self->_validate_type($opt);
+         if ( $opt->{parsed} ) {
+            delete $long[$i];
+         }
+         else {
+            MKDEBUG && _d('Temporarily failed to parse', $long);
+         }
+      }
+
+      die "Failed to parse options, possibly due to circular dependencies"
+         if @long == $long_last;
+      $long_last = @long;
+   }
+
+   return;
+}
+
+sub _validate_type {
+   my ( $self, $opt ) = @_;
+   return unless $opt;
+
+   if ( !$opt->{type} ) {
+      $opt->{parsed} = 1;
+      return;
+   }
+
+   my $val = $opt->{value};
+
+   if ( $val && $opt->{type} eq 'm' ) {  # type time
+      MKDEBUG && _d('Parsing option', $opt->{long}, 'as a time value');
+      my ( $prefix, $num, $suffix ) = $val =~ m/([+-]?)(\d+)([a-z])?$/;
+      if ( !$suffix ) {
+         my ( $s ) = $opt->{desc} =~ m/\(suffix (.)\)/;
+         $suffix = $s || 's';
+         MKDEBUG && _d('No suffix given; using', $suffix, 'for',
+            $opt->{long}, '(value:', $val, ')');
+      }
+      if ( $suffix =~ m/[smhd]/ ) {
+         $val = $suffix eq 's' ? $num            # Seconds
+              : $suffix eq 'm' ? $num * 60       # Minutes
+              : $suffix eq 'h' ? $num * 3600     # Hours
+              :                  $num * 86400;   # Days
+         $opt->{value} = ($prefix || '') . $val;
+         MKDEBUG && _d('Setting option', $opt->{long}, 'to', $val);
+      }
+      else {
+         $self->save_error("Invalid time suffix for --$opt->{long}");
+      }
+   }
+   elsif ( $val && $opt->{type} eq 'd' ) {  # type DSN
+      MKDEBUG && _d('Parsing option', $opt->{long}, 'as a DSN');
+      my $prev = {};
+      my $from_key = $self->{defaults_to}->{ $opt->{long} };
+      if ( $from_key ) {
+         MKDEBUG && _d($opt->{long}, 'DSN copies from', $from_key, 'DSN');
+         if ( $self->{opts}->{$from_key}->{parsed} ) {
+            $prev = $self->{opts}->{$from_key}->{value};
+         }
+         else {
+            MKDEBUG && _d('Cannot parse', $opt->{long}, 'until',
+               $from_key, 'parsed');
+            return;
+         }
+      }
+      my $defaults = $self->{DSNParser}->parse_options($self);
+      $opt->{value} = $self->{DSNParser}->parse($val, $prev, $defaults);
+   }
+   elsif ( $val && $opt->{type} eq 'z' ) {  # type size
+      MKDEBUG && _d('Parsing option', $opt->{long}, 'as a size value');
+      $self->_parse_size($opt, $val);
+   }
+   elsif ( $opt->{type} eq 'H' || (defined $val && $opt->{type} eq 'h') ) {
+      $opt->{value} = { map { $_ => 1 } split(/(?<!\\),\s*/, ($val || '')) };
+   }
+   elsif ( $opt->{type} eq 'A' || (defined $val && $opt->{type} eq 'a') ) {
+      $opt->{value} = [ split(/(?<!\\),\s*/, ($val || '')) ];
+   }
+   else {
+      MKDEBUG && _d('Nothing to validate for option',
+         $opt->{long}, 'type', $opt->{type}, 'value', $val);
+   }
+
+   $opt->{parsed} = 1;
+   return;
+}
+
+sub get {
+   my ( $self, $opt ) = @_;
+   my $long = (length $opt == 1 ? $self->{short_opts}->{$opt} : $opt);
+   die "Option $opt does not exist"
+      unless $long && exists $self->{opts}->{$long};
+   return $self->{opts}->{$long}->{value};
+}
+
+sub got {
+   my ( $self, $opt ) = @_;
+   my $long = (length $opt == 1 ? $self->{short_opts}->{$opt} : $opt);
+   die "Option $opt does not exist"
+      unless $long && exists $self->{opts}->{$long};
+   return $self->{opts}->{$long}->{got};
+}
+
+sub has {
+   my ( $self, $opt ) = @_;
+   my $long = (length $opt == 1 ? $self->{short_opts}->{$opt} : $opt);
+   return defined $long ? exists $self->{opts}->{$long} : 0;
+}
+
+sub set {
+   my ( $self, $opt, $val ) = @_;
+   my $long = (length $opt == 1 ? $self->{short_opts}->{$opt} : $opt);
+   die "Option $opt does not exist"
+      unless $long && exists $self->{opts}->{$long};
+   $self->{opts}->{$long}->{value} = $val;
+   return;
+}
+
+sub save_error {
+   my ( $self, $error ) = @_;
+   push @{$self->{errors}}, $error;
+   return;
+}
+
+sub errors {
+   my ( $self ) = @_;
+   return $self->{errors};
+}
+
+sub usage {
+   my ( $self ) = @_;
+   warn "No usage string is set" unless $self->{usage}; # XXX
+   return "Usage: " . ($self->{usage} || '') . "\n";
+}
+
+sub descr {
+   my ( $self ) = @_;
+   warn "No description string is set" unless $self->{description}; # XXX
+   my $descr  = ($self->{description} || $self->{program_name} || '')
+              . "  For more details, please use the --help option, "
+              . "or try 'perldoc $PROGRAM_NAME' "
+              . "for complete documentation.";
+   $descr = join("\n", $descr =~ m/(.{0,80})(?:\s+|$)/g)
+      unless $ENV{DONT_BREAK_LINES};
+   $descr =~ s/ +$//mg;
+   return $descr;
+}
+
+sub usage_or_errors {
+   my ( $self, $file, $return ) = @_;
+   $file ||= $self->{file} || __FILE__;
+
+   if ( !$self->{description} || !$self->{usage} ) {
+      MKDEBUG && _d("Getting description and usage from SYNOPSIS in", $file);
+      my %synop = $self->_parse_synopsis($file);
+      $self->{description} ||= $synop{description};
+      $self->{usage}       ||= $synop{usage};
+      MKDEBUG && _d("Description:", $self->{description},
+         "\nUsage:", $self->{usage});
+   }
+
+   if ( $self->{opts}->{help}->{got} ) {
+      print $self->print_usage() or die "Cannot print usage: $OS_ERROR";
+      exit 0 unless $return;
+   }
+   elsif ( scalar @{$self->{errors}} ) {
+      print $self->print_errors() or die "Cannot print errors: $OS_ERROR";
+      exit 0 unless $return;
+   }
+
+   return;
+}
+
+sub print_errors {
+   my ( $self ) = @_;
+   my $usage = $self->usage() . "\n";
+   if ( (my @errors = @{$self->{errors}}) ) {
+      $usage .= join("\n  * ", 'Errors in command-line arguments:', @errors)
+              . "\n";
+   }
+   return $usage . "\n" . $self->descr();
+}
+
+sub print_usage {
+   my ( $self ) = @_;
+   die "Run get_opts() before print_usage()" unless $self->{got_opts};
+   my @opts = values %{$self->{opts}};
+
+   my $maxl = max(
+      map {
+         length($_->{long})               # option long name
+         + ($_->{is_negatable} ? 4 : 0)   # "[no]" if opt is negatable
+         + ($_->{type} ? 2 : 0)           # "=x" where x is the opt type
+      }
+      @opts);
+
+   my $maxs = max(0,
+      map {
+         length($_)
+         + ($self->{opts}->{$_}->{is_negatable} ? 4 : 0)
+         + ($self->{opts}->{$_}->{type} ? 2 : 0)
+      }
+      values %{$self->{short_opts}});
+
+   my $lcol = max($maxl, ($maxs + 3));
+   my $rcol = 80 - $lcol - 6;
+   my $rpad = ' ' x ( 80 - $rcol );
+
+   $maxs = max($lcol - 3, $maxs);
+
+   my $usage = $self->descr() . "\n" . $self->usage();
+
+   my @groups = reverse sort grep { $_ ne 'default'; } keys %{$self->{groups}};
+   push @groups, 'default';
+
+   foreach my $group ( reverse @groups ) {
+      $usage .= "\n".($group eq 'default' ? 'Options' : $group).":\n\n";
+      foreach my $opt (
+         sort { $a->{long} cmp $b->{long} }
+         grep { $_->{group} eq $group }
+         @opts )
+      {
+         my $long  = $opt->{is_negatable} ? "[no]$opt->{long}" : $opt->{long};
+         my $short = $opt->{short};
+         my $desc  = $opt->{desc};
+
+         $long .= $opt->{type} ? "=$opt->{type}" : "";
+
+         if ( $opt->{type} && $opt->{type} eq 'm' ) {
+            my ($s) = $desc =~ m/\(suffix (.)\)/;
+            $s    ||= 's';
+            $desc =~ s/\s+\(suffix .\)//;
+            $desc .= ".  Optional suffix s=seconds, m=minutes, h=hours, "
+                   . "d=days; if no suffix, $s is used.";
+         }
+         $desc = join("\n$rpad", grep { $_ } $desc =~ m/(.{0,$rcol})(?:\s+|$)/g);
+         $desc =~ s/ +$//mg;
+         if ( $short ) {
+            $usage .= sprintf("  --%-${maxs}s -%s  %s\n", $long, $short, $desc);
+         }
+         else {
+            $usage .= sprintf("  --%-${lcol}s  %s\n", $long, $desc);
+         }
+      }
+   }
+
+   $usage .= "\nOption types: s=string, i=integer, f=float, h/H/a/A=comma-separated list, d=DSN, z=size, m=time\n";
+
+   if ( (my @rules = @{$self->{rules}}) ) {
+      $usage .= "\nRules:\n\n";
+      $usage .= join("\n", map { "  $_" } @rules) . "\n";
+   }
+   if ( $self->{DSNParser} ) {
+      $usage .= "\n" . $self->{DSNParser}->usage();
+   }
+   $usage .= "\nOptions and values after processing arguments:\n\n";
+   foreach my $opt ( sort { $a->{long} cmp $b->{long} } @opts ) {
+      my $val   = $opt->{value};
+      my $type  = $opt->{type} || '';
+      my $bool  = $opt->{spec} =~ m/^[\w-]+(?:\|[\w-])?!?$/;
+      $val      = $bool              ? ( $val ? 'TRUE' : 'FALSE' )
+                : !defined $val      ? '(No value)'
+                : $type eq 'd'       ? $self->{DSNParser}->as_string($val)
+                : $type =~ m/H|h/    ? join(',', sort keys %$val)
+                : $type =~ m/A|a/    ? join(',', @$val)
+                :                    $val;
+      $usage .= sprintf("  --%-${lcol}s  %s\n", $opt->{long}, $val);
+   }
+   return $usage;
+}
+
+sub prompt_noecho {
+   shift @_ if ref $_[0] eq __PACKAGE__;
+   my ( $prompt ) = @_;
+   local $OUTPUT_AUTOFLUSH = 1;
+   print $prompt
+      or die "Cannot print: $OS_ERROR";
+   my $response;
+   eval {
+      require Term::ReadKey;
+      Term::ReadKey::ReadMode('noecho');
+      chomp($response = <STDIN>);
+      Term::ReadKey::ReadMode('normal');
+      print "\n"
+         or die "Cannot print: $OS_ERROR";
+   };
+   if ( $EVAL_ERROR ) {
+      die "Cannot read response; is Term::ReadKey installed? $EVAL_ERROR";
+   }
+   return $response;
+}
+
+if ( MKDEBUG ) {
+   print '# ', $^X, ' ', $], "\n";
+   my $uname = `uname -a`;
+   if ( $uname ) {
+      $uname =~ s/\s+/ /g;
+      print "# $uname\n";
+   }
+   printf("# %s  Ver %s Distrib %s Changeset %s line %d\n",
+      $PROGRAM_NAME, ($main::VERSION || ''), ($main::DISTRIB || ''),
+      ($main::SVN_REV || ''), __LINE__);
+   print('# Arguments: ',
+      join(' ', map { my $a = "_[$_]_"; $a =~ s/\n/\n# /g; $a; } @ARGV), "\n");
+}
+
+sub _read_config_file {
+   my ( $self, $filename ) = @_;
+   open my $fh, "<", $filename or die "Cannot open $filename: $OS_ERROR\n";
+   my @args;
+   my $prefix = '--';
+   my $parse  = 1;
+
+   LINE:
+   while ( my $line = <$fh> ) {
+      chomp $line;
+      next LINE if $line =~ m/^\s*(?:\#|\;|$)/;
+      $line =~ s/\s+#.*$//g;
+      $line =~ s/^\s+|\s+$//g;
+      if ( $line eq '--' ) {
+         $prefix = '';
+         $parse  = 0;
+         next LINE;
+      }
+      if ( $parse
+         && (my($opt, $arg) = $line =~ m/^\s*([^=\s]+?)(?:\s*=\s*(.*?)\s*)?$/)
+      ) {
+         push @args, grep { defined $_ } ("$prefix$opt", $arg);
+      }
+      elsif ( $line =~ m/./ ) {
+         push @args, $line;
+      }
+      else {
+         die "Syntax error in file $filename at line $INPUT_LINE_NUMBER";
+      }
+   }
+   close $fh;
+   return @args;
+}
+
+sub read_para_after {
+   my ( $self, $file, $regex ) = @_;
+   open my $fh, "<", $file or die "Can't open $file: $OS_ERROR";
+   local $INPUT_RECORD_SEPARATOR = '';
+   my $para;
+   while ( $para = <$fh> ) {
+      next unless $para =~ m/^=pod$/m;
+      last;
+   }
+   while ( $para = <$fh> ) {
+      next unless $para =~ m/$regex/;
+      last;
+   }
+   $para = <$fh>;
+   chomp($para);
+   close $fh or die "Can't close $file: $OS_ERROR";
+   return $para;
+}
+
+sub clone {
+   my ( $self ) = @_;
+
+   my %clone = map {
+      my $hashref  = $self->{$_};
+      my $val_copy = {};
+      foreach my $key ( keys %$hashref ) {
+         my $ref = ref $hashref->{$key};
+         $val_copy->{$key} = !$ref           ? $hashref->{$key}
+                           : $ref eq 'HASH'  ? { %{$hashref->{$key}} }
+                           : $ref eq 'ARRAY' ? [ @{$hashref->{$key}} ]
+                           : $hashref->{$key};
+      }
+      $_ => $val_copy;
+   } qw(opts short_opts defaults);
+
+   foreach my $scalar ( qw(got_opts) ) {
+      $clone{$scalar} = $self->{$scalar};
+   }
+
+   return bless \%clone;     
+}
+
+sub _parse_size {
+   my ( $self, $opt, $val ) = @_;
+
+   if ( lc($val || '') eq 'null' ) {
+      MKDEBUG && _d('NULL size for', $opt->{long});
+      $opt->{value} = 'null';
+      return;
+   }
+
+   my %factor_for = (k => 1_024, M => 1_048_576, G => 1_073_741_824);
+   my ($pre, $num, $factor) = $val =~ m/^([+-])?(\d+)([kMG])?$/;
+   if ( defined $num ) {
+      if ( $factor ) {
+         $num *= $factor_for{$factor};
+         MKDEBUG && _d('Setting option', $opt->{y},
+            'to num', $num, '* factor', $factor);
+      }
+      $opt->{value} = ($pre || '') . $num;
+   }
+   else {
+      $self->save_error("Invalid size for --$opt->{long}");
+   }
+   return;
+}
+
+sub _parse_attribs {
+   my ( $self, $option, $attribs ) = @_;
+   my $types = $self->{types};
+   return $option
+      . ($attribs->{'short form'} ? '|' . $attribs->{'short form'}   : '' )
+      . ($attribs->{'negatable'}  ? '!'                              : '' )
+      . ($attribs->{'cumulative'} ? '+'                              : '' )
+      . ($attribs->{'type'}       ? '=' . $types->{$attribs->{type}} : '' );
+}
+
+sub _parse_synopsis {
+   my ( $self, $file ) = @_;
+   $file ||= $self->{file} || __FILE__;
+   MKDEBUG && _d("Parsing SYNOPSIS in", $file);
+
+   local $INPUT_RECORD_SEPARATOR = '';  # read paragraphs
+   open my $fh, "<", $file or die "Cannot open $file: $OS_ERROR";
+   my $para;
+   1 while defined($para = <$fh>) && $para !~ m/^=head1 SYNOPSIS/;
+   die "$file does not contain a SYNOPSIS section" unless $para;
+   my @synop;
+   for ( 1..2 ) {  # 1 for the usage, 2 for the description
+      my $para = <$fh>;
+      push @synop, $para;
+   }
+   close $fh;
+   MKDEBUG && _d("Raw SYNOPSIS text:", @synop);
+   my ($usage, $desc) = @synop;
+   die "The SYNOPSIS section in $file is not formatted properly"
+      unless $usage && $desc;
+
+   $usage =~ s/^\s*Usage:\s+(.+)/$1/;
+   chomp $usage;
+
+   $desc =~ s/\n/ /g;
+   $desc =~ s/\s{2,}/ /g;
+   $desc =~ s/\. ([A-Z][a-z])/.  $1/g;
+   $desc =~ s/\s+$//;
+
+   return (
+      description => $desc,
+      usage       => $usage,
+   );
+};
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End OptionParser package
+# ###########################################################################
+
+# ###########################################################################
+# DSNParser package 7388
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/DSNParser.pm
+#   trunk/common/t/DSNParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package DSNParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 0;
+$Data::Dumper::Quotekeys = 0;
+
+eval {
+   require DBI;
+};
+my $have_dbi = $EVAL_ERROR ? 0 : 1;
+
+
+sub new {
+   my ( $class, %args ) = @_;
+   foreach my $arg ( qw(opts) ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = {
+      opts => {}  # h, P, u, etc.  Should come from DSN OPTIONS section in POD.
+   };
+   foreach my $opt ( @{$args{opts}} ) {
+      if ( !$opt->{key} || !$opt->{desc} ) {
+         die "Invalid DSN option: ", Dumper($opt);
+      }
+      MKDEBUG && _d('DSN option:',
+         join(', ',
+            map { "$_=" . (defined $opt->{$_} ? ($opt->{$_} || '') : 'undef') }
+               keys %$opt
+         )
+      );
+      $self->{opts}->{$opt->{key}} = {
+         dsn  => $opt->{dsn},
+         desc => $opt->{desc},
+         copy => $opt->{copy} || 0,
+      };
+   }
+   return bless $self, $class;
+}
+
+sub prop {
+   my ( $self, $prop, $value ) = @_;
+   if ( @_ > 2 ) {
+      MKDEBUG && _d('Setting', $prop, 'property');
+      $self->{$prop} = $value;
+   }
+   return $self->{$prop};
+}
+
+sub parse {
+   my ( $self, $dsn, $prev, $defaults ) = @_;
+   if ( !$dsn ) {
+      MKDEBUG && _d('No DSN to parse');
+      return;
+   }
+   MKDEBUG && _d('Parsing', $dsn);
+   $prev     ||= {};
+   $defaults ||= {};
+   my %given_props;
+   my %final_props;
+   my $opts = $self->{opts};
+
+   foreach my $dsn_part ( split(/,/, $dsn) ) {
+      if ( my ($prop_key, $prop_val) = $dsn_part =~  m/^(.)=(.*)$/ ) {
+         $given_props{$prop_key} = $prop_val;
+      }
+      else {
+         MKDEBUG && _d('Interpreting', $dsn_part, 'as h=', $dsn_part);
+         $given_props{h} = $dsn_part;
+      }
+   }
+
+   foreach my $key ( keys %$opts ) {
+      MKDEBUG && _d('Finding value for', $key);
+      $final_props{$key} = $given_props{$key};
+      if (   !defined $final_props{$key}
+           && defined $prev->{$key} && $opts->{$key}->{copy} )
+      {
+         $final_props{$key} = $prev->{$key};
+         MKDEBUG && _d('Copying value for', $key, 'from previous DSN');
+      }
+      if ( !defined $final_props{$key} ) {
+         $final_props{$key} = $defaults->{$key};
+         MKDEBUG && _d('Copying value for', $key, 'from defaults');
+      }
+   }
+
+   foreach my $key ( keys %given_props ) {
+      die "Unknown DSN option '$key' in '$dsn'.  For more details, "
+            . "please use the --help option, or try 'perldoc $PROGRAM_NAME' "
+            . "for complete documentation."
+         unless exists $opts->{$key};
+   }
+   if ( (my $required = $self->prop('required')) ) {
+      foreach my $key ( keys %$required ) {
+         die "Missing required DSN option '$key' in '$dsn'.  For more details, "
+               . "please use the --help option, or try 'perldoc $PROGRAM_NAME' "
+               . "for complete documentation."
+            unless $final_props{$key};
+      }
+   }
+
+   return \%final_props;
+}
+
+sub parse_options {
+   my ( $self, $o ) = @_;
+   die 'I need an OptionParser object' unless ref $o eq 'OptionParser';
+   my $dsn_string
+      = join(',',
+          map  { "$_=".$o->get($_); }
+          grep { $o->has($_) && $o->get($_) }
+          keys %{$self->{opts}}
+        );
+   MKDEBUG && _d('DSN string made from options:', $dsn_string);
+   return $self->parse($dsn_string);
+}
+
+sub as_string {
+   my ( $self, $dsn, $props ) = @_;
+   return $dsn unless ref $dsn;
+   my %allowed = $props ? map { $_=>1 } @$props : ();
+   return join(',',
+      map  { "$_=" . ($_ eq 'p' ? '...' : $dsn->{$_})  }
+      grep { defined $dsn->{$_} && $self->{opts}->{$_} }
+      grep { !$props || $allowed{$_}                   }
+      sort keys %$dsn );
+}
+
+sub usage {
+   my ( $self ) = @_;
+   my $usage
+      = "DSN syntax is key=value[,key=value...]  Allowable DSN keys:\n\n"
+      . "  KEY  COPY  MEANING\n"
+      . "  ===  ====  =============================================\n";
+   my %opts = %{$self->{opts}};
+   foreach my $key ( sort keys %opts ) {
+      $usage .= "  $key    "
+             .  ($opts{$key}->{copy} ? 'yes   ' : 'no    ')
+             .  ($opts{$key}->{desc} || '[No description]')
+             . "\n";
+   }
+   $usage .= "\n  If the DSN is a bareword, the word is treated as the 'h' key.\n";
+   return $usage;
+}
+
+sub get_cxn_params {
+   my ( $self, $info ) = @_;
+   my $dsn;
+   my %opts = %{$self->{opts}};
+   my $driver = $self->prop('dbidriver') || '';
+   if ( $driver eq 'Pg' ) {
+      $dsn = 'DBI:Pg:dbname=' . ( $info->{D} || '' ) . ';'
+         . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
+                     grep { defined $info->{$_} }
+                     qw(h P));
+   }
+   else {
+      $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
+         . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
+                     grep { defined $info->{$_} }
+                     qw(F h P S A))
+         . ';mysql_read_default_group=client';
+   }
+   MKDEBUG && _d($dsn);
+   return ($dsn, $info->{u}, $info->{p});
+}
+
+sub fill_in_dsn {
+   my ( $self, $dbh, $dsn ) = @_;
+   my $vars = $dbh->selectall_hashref('SHOW VARIABLES', 'Variable_name');
+   my ($user, $db) = $dbh->selectrow_array('SELECT USER(), DATABASE()');
+   $user =~ s/@.*//;
+   $dsn->{h} ||= $vars->{hostname}->{Value};
+   $dsn->{S} ||= $vars->{'socket'}->{Value};
+   $dsn->{P} ||= $vars->{port}->{Value};
+   $dsn->{u} ||= $user;
+   $dsn->{D} ||= $db;
+}
+
+sub get_dbh {
+   my ( $self, $cxn_string, $user, $pass, $opts ) = @_;
+   $opts ||= {};
+   my $defaults = {
+      AutoCommit         => 0,
+      RaiseError         => 1,
+      PrintError         => 0,
+      ShowErrorStatement => 1,
+      mysql_enable_utf8 => ($cxn_string =~ m/charset=utf8/i ? 1 : 0),
+   };
+   @{$defaults}{ keys %$opts } = values %$opts;
+
+   if ( $opts->{mysql_use_result} ) {
+      $defaults->{mysql_use_result} = 1;
+   }
+
+   if ( !$have_dbi ) {
+      die "Cannot connect to MySQL because the Perl DBI module is not "
+         . "installed or not found.  Run 'perl -MDBI' to see the directories "
+         . "that Perl searches for DBI.  If DBI is not installed, try:\n"
+         . "  Debian/Ubuntu  apt-get install libdbi-perl\n"
+         . "  RHEL/CentOS    yum install perl-DBI\n"
+         . "  OpenSolaris    pgk install pkg:/SUNWpmdbi\n";
+
+   }
+
+   my $dbh;
+   my $tries = 2;
+   while ( !$dbh && $tries-- ) {
+      MKDEBUG && _d($cxn_string, ' ', $user, ' ', $pass, ' {',
+         join(', ', map { "$_=>$defaults->{$_}" } keys %$defaults ), '}');
+
+      eval {
+         $dbh = DBI->connect($cxn_string, $user, $pass, $defaults);
+
+         if ( $cxn_string =~ m/mysql/i ) {
+            my $sql;
+
+            $sql = 'SELECT @@SQL_MODE';
+            MKDEBUG && _d($dbh, $sql);
+            my ($sql_mode) = $dbh->selectrow_array($sql);
+
+            $sql = 'SET @@SQL_QUOTE_SHOW_CREATE = 1'
+                 . '/*!40101, @@SQL_MODE=\'NO_AUTO_VALUE_ON_ZERO'
+                 . ($sql_mode ? ",$sql_mode" : '')
+                 . '\'*/';
+            MKDEBUG && _d($dbh, $sql);
+            $dbh->do($sql);
+
+            if ( my ($charset) = $cxn_string =~ m/charset=(\w+)/ ) {
+               $sql = "/*!40101 SET NAMES $charset*/";
+               MKDEBUG && _d($dbh, ':', $sql);
+               $dbh->do($sql);
+               MKDEBUG && _d('Enabling charset for STDOUT');
+               if ( $charset eq 'utf8' ) {
+                  binmode(STDOUT, ':utf8')
+                     or die "Can't binmode(STDOUT, ':utf8'): $OS_ERROR";
+               }
+               else {
+                  binmode(STDOUT) or die "Can't binmode(STDOUT): $OS_ERROR";
+               }
+            }
+
+            if ( $self->prop('set-vars') ) {
+               $sql = "SET " . $self->prop('set-vars');
+               MKDEBUG && _d($dbh, ':', $sql);
+               $dbh->do($sql);
+            }
+         }
+      };
+      if ( !$dbh && $EVAL_ERROR ) {
+         MKDEBUG && _d($EVAL_ERROR);
+         if ( $EVAL_ERROR =~ m/not a compiled character set|character set utf8/ ) {
+            MKDEBUG && _d('Going to try again without utf8 support');
+            delete $defaults->{mysql_enable_utf8};
+         }
+         elsif ( $EVAL_ERROR =~ m/locate DBD\/mysql/i ) {
+            die "Cannot connect to MySQL because the Perl DBD::mysql module is "
+               . "not installed or not found.  Run 'perl -MDBD::mysql' to see "
+               . "the directories that Perl searches for DBD::mysql.  If "
+               . "DBD::mysql is not installed, try:\n"
+               . "  Debian/Ubuntu  apt-get install libdbd-mysql-perl\n"
+               . "  RHEL/CentOS    yum install perl-DBD-MySQL\n"
+               . "  OpenSolaris    pgk install pkg:/SUNWapu13dbd-mysql\n";
+         }
+         if ( !$tries ) {
+            die $EVAL_ERROR;
+         }
+      }
+   }
+
+   MKDEBUG && _d('DBH info: ',
+      $dbh,
+      Dumper($dbh->selectrow_hashref(
+         'SELECT DATABASE(), CONNECTION_ID(), VERSION()/*!50038 , @@hostname*/')),
+      'Connection info:',      $dbh->{mysql_hostinfo},
+      'Character set info:',   Dumper($dbh->selectall_arrayref(
+                     'SHOW VARIABLES LIKE "character_set%"', { Slice => {}})),
+      '$DBD::mysql::VERSION:', $DBD::mysql::VERSION,
+      '$DBI::VERSION:',        $DBI::VERSION,
+   );
+
+   return $dbh;
+}
+
+sub get_hostname {
+   my ( $self, $dbh ) = @_;
+   if ( my ($host) = ($dbh->{mysql_hostinfo} || '') =~ m/^(\w+) via/ ) {
+      return $host;
+   }
+   my ( $hostname, $one ) = $dbh->selectrow_array(
+      'SELECT /*!50038 @@hostname, */ 1');
+   return $hostname;
+}
+
+sub disconnect {
+   my ( $self, $dbh ) = @_;
+   MKDEBUG && $self->print_active_handles($dbh);
+   $dbh->disconnect;
+}
+
+sub print_active_handles {
+   my ( $self, $thing, $level ) = @_;
+   $level ||= 0;
+   printf("# Active %sh: %s %s %s\n", ($thing->{Type} || 'undef'), "\t" x $level,
+      $thing, (($thing->{Type} || '') eq 'st' ? $thing->{Statement} || '' : ''))
+      or die "Cannot print: $OS_ERROR";
+   foreach my $handle ( grep {defined} @{ $thing->{ChildHandles} } ) {
+      $self->print_active_handles( $handle, $level + 1 );
+   }
+}
+
+sub copy {
+   my ( $self, $dsn_1, $dsn_2, %args ) = @_;
+   die 'I need a dsn_1 argument' unless $dsn_1;
+   die 'I need a dsn_2 argument' unless $dsn_2;
+   my %new_dsn = map {
+      my $key = $_;
+      my $val;
+      if ( $args{overwrite} ) {
+         $val = defined $dsn_1->{$key} ? $dsn_1->{$key} : $dsn_2->{$key};
+      }
+      else {
+         $val = defined $dsn_2->{$key} ? $dsn_2->{$key} : $dsn_1->{$key};
+      }
+      $key => $val;
+   } keys %{$self->{opts}};
+   return \%new_dsn;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End DSNParser package
+# ###########################################################################
+
+# ###########################################################################
+# Daemon package 6255
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Daemon.pm
+#   trunk/common/t/Daemon.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Daemon;
+
+use strict;
+use warnings FATAL => 'all';
+
+use POSIX qw(setsid);
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   foreach my $arg ( qw(o) ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $o = $args{o};
+   my $self = {
+      o        => $o,
+      log_file => $o->has('log') ? $o->get('log') : undef,
+      PID_file => $o->has('pid') ? $o->get('pid') : undef,
+   };
+
+   check_PID_file(undef, $self->{PID_file});
+
+   MKDEBUG && _d('Daemonized child will log to', $self->{log_file});
+   return bless $self, $class;
+}
+
+sub daemonize {
+   my ( $self ) = @_;
+
+   MKDEBUG && _d('About to fork and daemonize');
+   defined (my $pid = fork()) or die "Cannot fork: $OS_ERROR";
+   if ( $pid ) {
+      MKDEBUG && _d('I am the parent and now I die');
+      exit;
+   }
+
+   $self->{PID_owner} = $PID;
+   $self->{child}     = 1;
+
+   POSIX::setsid() or die "Cannot start a new session: $OS_ERROR";
+   chdir '/'       or die "Cannot chdir to /: $OS_ERROR";
+
+   $self->_make_PID_file();
+
+   $OUTPUT_AUTOFLUSH = 1;
+
+   if ( -t STDIN ) {
+      close STDIN;
+      open  STDIN, '/dev/null'
+         or die "Cannot reopen STDIN to /dev/null: $OS_ERROR";
+   }
+
+   if ( $self->{log_file} ) {
+      close STDOUT;
+      open  STDOUT, '>>', $self->{log_file}
+         or die "Cannot open log file $self->{log_file}: $OS_ERROR";
+
+      close STDERR;
+      open  STDERR, ">&STDOUT"
+         or die "Cannot dupe STDERR to STDOUT: $OS_ERROR"; 
+   }
+   else {
+      if ( -t STDOUT ) {
+         close STDOUT;
+         open  STDOUT, '>', '/dev/null'
+            or die "Cannot reopen STDOUT to /dev/null: $OS_ERROR";
+      }
+      if ( -t STDERR ) {
+         close STDERR;
+         open  STDERR, '>', '/dev/null'
+            or die "Cannot reopen STDERR to /dev/null: $OS_ERROR";
+      }
+   }
+
+   MKDEBUG && _d('I am the child and now I live daemonized');
+   return;
+}
+
+sub check_PID_file {
+   my ( $self, $file ) = @_;
+   my $PID_file = $self ? $self->{PID_file} : $file;
+   MKDEBUG && _d('Checking PID file', $PID_file);
+   if ( $PID_file && -f $PID_file ) {
+      my $pid;
+      eval { chomp($pid = `cat $PID_file`); };
+      die "Cannot cat $PID_file: $OS_ERROR" if $EVAL_ERROR;
+      MKDEBUG && _d('PID file exists; it contains PID', $pid);
+      if ( $pid ) {
+         my $pid_is_alive = kill 0, $pid;
+         if ( $pid_is_alive ) {
+            die "The PID file $PID_file already exists "
+               . " and the PID that it contains, $pid, is running";
+         }
+         else {
+            warn "Overwriting PID file $PID_file because the PID that it "
+               . "contains, $pid, is not running";
+         }
+      }
+      else {
+         die "The PID file $PID_file already exists but it does not "
+            . "contain a PID";
+      }
+   }
+   else {
+      MKDEBUG && _d('No PID file');
+   }
+   return;
+}
+
+sub make_PID_file {
+   my ( $self ) = @_;
+   if ( exists $self->{child} ) {
+      die "Do not call Daemon::make_PID_file() for daemonized scripts";
+   }
+   $self->_make_PID_file();
+   $self->{PID_owner} = $PID;
+   return;
+}
+
+sub _make_PID_file {
+   my ( $self ) = @_;
+
+   my $PID_file = $self->{PID_file};
+   if ( !$PID_file ) {
+      MKDEBUG && _d('No PID file to create');
+      return;
+   }
+
+   $self->check_PID_file();
+
+   open my $PID_FH, '>', $PID_file
+      or die "Cannot open PID file $PID_file: $OS_ERROR";
+   print $PID_FH $PID
+      or die "Cannot print to PID file $PID_file: $OS_ERROR";
+   close $PID_FH
+      or die "Cannot close PID file $PID_file: $OS_ERROR";
+
+   MKDEBUG && _d('Created PID file:', $self->{PID_file});
+   return;
+}
+
+sub _remove_PID_file {
+   my ( $self ) = @_;
+   if ( $self->{PID_file} && -f $self->{PID_file} ) {
+      unlink $self->{PID_file}
+         or warn "Cannot remove PID file $self->{PID_file}: $OS_ERROR";
+      MKDEBUG && _d('Removed PID file');
+   }
+   else {
+      MKDEBUG && _d('No PID to remove');
+   }
+   return;
+}
+
+sub DESTROY {
+   my ( $self ) = @_;
+
+   $self->_remove_PID_file() if ($self->{PID_owner} || 0) == $PID;
+
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Daemon package
+# ###########################################################################
+
+# ###########################################################################
+# Quoter package 6850
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Quoter.pm
+#   trunk/common/t/Quoter.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Quoter;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   return bless {}, $class;
+}
+
+sub quote {
+   my ( $self, @vals ) = @_;
+   foreach my $val ( @vals ) {
+      $val =~ s/`/``/g;
+   }
+   return join('.', map { '`' . $_ . '`' } @vals);
+}
+
+sub quote_val {
+   my ( $self, $val ) = @_;
+
+   return 'NULL' unless defined $val;          # undef = NULL
+   return "''" if $val eq '';                  # blank string = ''
+   return $val if $val =~ m/^0x[0-9a-fA-F]+$/;  # hex data
+
+   $val =~ s/(['\\])/\\$1/g;
+   return "'$val'";
+}
+
+sub split_unquote {
+   my ( $self, $db_tbl, $default_db ) = @_;
+   $db_tbl =~ s/`//g;
+   my ( $db, $tbl ) = split(/[.]/, $db_tbl);
+   if ( !$tbl ) {
+      $tbl = $db;
+      $db  = $default_db;
+   }
+   return ($db, $tbl);
+}
+
+sub literal_like {
+   my ( $self, $like ) = @_;
+   return unless $like;
+   $like =~ s/([%_])/\\$1/g;
+   return "'$like'";
+}
+
+sub join_quote {
+   my ( $self, $default_db, $db_tbl ) = @_;
+   return unless $db_tbl;
+   my ($db, $tbl) = split(/[.]/, $db_tbl);
+   if ( !$tbl ) {
+      $tbl = $db;
+      $db  = $default_db;
+   }
+   $db  = "`$db`"  if $db  && $db  !~ m/^`/;
+   $tbl = "`$tbl`" if $tbl && $tbl !~ m/^`/;
+   return $db ? "$db.$tbl" : $tbl;
+}
+
+1;
+
+# ###########################################################################
+# End Quoter package
+# ###########################################################################
+
+# ###########################################################################
+# TableParser package 7550
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableParser.pm
+#   trunk/common/t/TableParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package TableParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = { %args };
+   return bless $self, $class;
+}
+
+sub parse {
+   my ( $self, $ddl, $opts ) = @_;
+   return unless $ddl;
+   if ( ref $ddl eq 'ARRAY' ) {
+      if ( lc $ddl->[0] eq 'table' ) {
+         $ddl = $ddl->[1];
+      }
+      else {
+         return {
+            engine => 'VIEW',
+         };
+      }
+   }
+
+   if ( $ddl !~ m/CREATE (?:TEMPORARY )?TABLE `/ ) {
+      die "Cannot parse table definition; is ANSI quoting "
+         . "enabled or SQL_QUOTE_SHOW_CREATE disabled?";
+   }
+
+   my ($name)     = $ddl =~ m/CREATE (?:TEMPORARY )?TABLE\s+(`.+?`)/;
+   (undef, $name) = $self->{Quoter}->split_unquote($name) if $name;
+
+   $ddl =~ s/(`[^`]+`)/\L$1/g;
+
+   my $engine = $self->get_engine($ddl);
+
+   my @defs   = $ddl =~ m/^(\s+`.*?),?$/gm;
+   my @cols   = map { $_ =~ m/`([^`]+)`/ } @defs;
+   MKDEBUG && _d('Table cols:', join(', ', map { "`$_`" } @cols));
+
+   my %def_for;
+   @def_for{@cols} = @defs;
+
+   my (@nums, @null);
+   my (%type_for, %is_nullable, %is_numeric, %is_autoinc);
+   foreach my $col ( @cols ) {
+      my $def = $def_for{$col};
+      my ( $type ) = $def =~ m/`[^`]+`\s([a-z]+)/;
+      die "Can't determine column type for $def" unless $type;
+      $type_for{$col} = $type;
+      if ( $type =~ m/(?:(?:tiny|big|medium|small)?int|float|double|decimal|year)/ ) {
+         push @nums, $col;
+         $is_numeric{$col} = 1;
+      }
+      if ( $def !~ m/NOT NULL/ ) {
+         push @null, $col;
+         $is_nullable{$col} = 1;
+      }
+      $is_autoinc{$col} = $def =~ m/AUTO_INCREMENT/i ? 1 : 0;
+   }
+
+   my ($keys, $clustered_key) = $self->get_keys($ddl, $opts, \%is_nullable);
+
+   my ($charset) = $ddl =~ m/DEFAULT CHARSET=(\w+)/;
+
+   return {
+      name           => $name,
+      cols           => \@cols,
+      col_posn       => { map { $cols[$_] => $_ } 0..$#cols },
+      is_col         => { map { $_ => 1 } @cols },
+      null_cols      => \@null,
+      is_nullable    => \%is_nullable,
+      is_autoinc     => \%is_autoinc,
+      clustered_key  => $clustered_key,
+      keys           => $keys,
+      defs           => \%def_for,
+      numeric_cols   => \@nums,
+      is_numeric     => \%is_numeric,
+      engine         => $engine,
+      type_for       => \%type_for,
+      charset        => $charset,
+   };
+}
+
+sub sort_indexes {
+   my ( $self, $tbl ) = @_;
+
+   my @indexes
+      = sort {
+         (($a ne 'PRIMARY') <=> ($b ne 'PRIMARY'))
+         || ( !$tbl->{keys}->{$a}->{is_unique} <=> !$tbl->{keys}->{$b}->{is_unique} )
+         || ( $tbl->{keys}->{$a}->{is_nullable} <=> $tbl->{keys}->{$b}->{is_nullable} )
+         || ( scalar(@{$tbl->{keys}->{$a}->{cols}}) <=> scalar(@{$tbl->{keys}->{$b}->{cols}}) )
+      }
+      grep {
+         $tbl->{keys}->{$_}->{type} eq 'BTREE'
+      }
+      sort keys %{$tbl->{keys}};
+
+   MKDEBUG && _d('Indexes sorted best-first:', join(', ', @indexes));
+   return @indexes;
+}
+
+sub find_best_index {
+   my ( $self, $tbl, $index ) = @_;
+   my $best;
+   if ( $index ) {
+      ($best) = grep { uc $_ eq uc $index } keys %{$tbl->{keys}};
+   }
+   if ( !$best ) {
+      if ( $index ) {
+         die "Index '$index' does not exist in table";
+      }
+      else {
+         ($best) = $self->sort_indexes($tbl);
+      }
+   }
+   MKDEBUG && _d('Best index found is', $best);
+   return $best;
+}
+
+sub find_possible_keys {
+   my ( $self, $dbh, $database, $table, $quoter, $where ) = @_;
+   return () unless $where;
+   my $sql = 'EXPLAIN SELECT * FROM ' . $quoter->quote($database, $table)
+      . ' WHERE ' . $where;
+   MKDEBUG && _d($sql);
+   my $expl = $dbh->selectrow_hashref($sql);
+   $expl = { map { lc($_) => $expl->{$_} } keys %$expl };
+   if ( $expl->{possible_keys} ) {
+      MKDEBUG && _d('possible_keys =', $expl->{possible_keys});
+      my @candidates = split(',', $expl->{possible_keys});
+      my %possible   = map { $_ => 1 } @candidates;
+      if ( $expl->{key} ) {
+         MKDEBUG && _d('MySQL chose', $expl->{key});
+         unshift @candidates, grep { $possible{$_} } split(',', $expl->{key});
+         MKDEBUG && _d('Before deduping:', join(', ', @candidates));
+         my %seen;
+         @candidates = grep { !$seen{$_}++ } @candidates;
+      }
+      MKDEBUG && _d('Final list:', join(', ', @candidates));
+      return @candidates;
+   }
+   else {
+      MKDEBUG && _d('No keys in possible_keys');
+      return ();
+   }
+}
+
+sub check_table {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh db tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $db, $tbl) = @args{@required_args};
+   my $q      = $self->{Quoter};
+   my $db_tbl = $q->quote($db, $tbl);
+   MKDEBUG && _d('Checking', $db_tbl);
+
+   my $sql = "SHOW TABLES FROM " . $q->quote($db)
+           . ' LIKE ' . $q->literal_like($tbl);
+   MKDEBUG && _d($sql);
+   my $row;
+   eval {
+      $row = $dbh->selectrow_arrayref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !$row->[0] || $row->[0] ne $tbl ) {
+      MKDEBUG && _d('Table does not exist');
+      return 0;
+   }
+
+   MKDEBUG && _d('Table exists; no privs to check');
+   return 1 unless $args{all_privs};
+
+   $sql = "SHOW FULL COLUMNS FROM $db_tbl";
+   MKDEBUG && _d($sql);
+   eval {
+      $row = $dbh->selectrow_hashref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !scalar keys %$row ) {
+      MKDEBUG && _d('Table has no columns:', Dumper($row));
+      return 0;
+   }
+   my $privs = $row->{privileges} || $row->{Privileges};
+
+   $sql = "DELETE FROM $db_tbl LIMIT 0";
+   MKDEBUG && _d($sql);
+   eval {
+      $dbh->do($sql);
+   };
+   my $can_delete = $EVAL_ERROR ? 0 : 1;
+
+   MKDEBUG && _d('User privs on', $db_tbl, ':', $privs,
+      ($can_delete ? 'delete' : ''));
+
+   if ( !($privs =~ m/select/ && $privs =~ m/insert/ && $privs =~ m/update/
+          && $can_delete) ) {
+      MKDEBUG && _d('User does not have all privs');
+      return 0;
+   }
+
+   MKDEBUG && _d('User has all privs');
+   return 1;
+}
+
+sub get_engine {
+   my ( $self, $ddl, $opts ) = @_;
+   my ( $engine ) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;
+   MKDEBUG && _d('Storage engine:', $engine);
+   return $engine || undef;
+}
+
+sub get_keys {
+   my ( $self, $ddl, $opts, $is_nullable ) = @_;
+   my $engine        = $self->get_engine($ddl);
+   my $keys          = {};
+   my $clustered_key = undef;
+
+   KEY:
+   foreach my $key ( $ddl =~ m/^  ((?:[A-Z]+ )?KEY .*)$/gm ) {
+
+      next KEY if $key =~ m/FOREIGN/;
+
+      my $key_ddl = $key;
+      MKDEBUG && _d('Parsed key:', $key_ddl);
+
+      if ( $engine !~ m/MEMORY|HEAP/ ) {
+         $key =~ s/USING HASH/USING BTREE/;
+      }
+
+      my ( $type, $cols ) = $key =~ m/(?:USING (\w+))? \((.+)\)/;
+      my ( $special ) = $key =~ m/(FULLTEXT|SPATIAL)/;
+      $type = $type || $special || 'BTREE';
+      if ( $opts->{mysql_version} && $opts->{mysql_version} lt '004001000'
+         && $engine =~ m/HEAP|MEMORY/i )
+      {
+         $type = 'HASH'; # MySQL pre-4.1 supports only HASH indexes on HEAP
+      }
+
+      my ($name) = $key =~ m/(PRIMARY|`[^`]*`)/;
+      my $unique = $key =~ m/PRIMARY|UNIQUE/ ? 1 : 0;
+      my @cols;
+      my @col_prefixes;
+      foreach my $col_def ( $cols =~ m/`[^`]+`(?:\(\d+\))?/g ) {
+         my ($name, $prefix) = $col_def =~ m/`([^`]+)`(?:\((\d+)\))?/;
+         push @cols, $name;
+         push @col_prefixes, $prefix;
+      }
+      $name =~ s/`//g;
+
+      MKDEBUG && _d( $name, 'key cols:', join(', ', map { "`$_`" } @cols));
+
+      $keys->{$name} = {
+         name         => $name,
+         type         => $type,
+         colnames     => $cols,
+         cols         => \@cols,
+         col_prefixes => \@col_prefixes,
+         is_unique    => $unique,
+         is_nullable  => scalar(grep { $is_nullable->{$_} } @cols),
+         is_col       => { map { $_ => 1 } @cols },
+         ddl          => $key_ddl,
+      };
+
+      if ( $engine =~ m/InnoDB/i && !$clustered_key ) {
+         my $this_key = $keys->{$name};
+         if ( $this_key->{name} eq 'PRIMARY' ) {
+            $clustered_key = 'PRIMARY';
+         }
+         elsif ( $this_key->{is_unique} && !$this_key->{is_nullable} ) {
+            $clustered_key = $this_key->{name};
+         }
+         MKDEBUG && $clustered_key && _d('This key is the clustered key');
+      }
+   }
+
+   return $keys, $clustered_key;
+}
+
+sub get_fks {
+   my ( $self, $ddl, $opts ) = @_;
+   my $q   = $self->{Quoter};
+   my $fks = {};
+
+   foreach my $fk (
+      $ddl =~ m/CONSTRAINT .* FOREIGN KEY .* REFERENCES [^\)]*\)/mg )
+   {
+      my ( $name ) = $fk =~ m/CONSTRAINT `(.*?)`/;
+      my ( $cols ) = $fk =~ m/FOREIGN KEY \(([^\)]+)\)/;
+      my ( $parent, $parent_cols ) = $fk =~ m/REFERENCES (\S+) \(([^\)]+)\)/;
+
+      my ($db, $tbl) = $q->split_unquote($parent, $opts->{database});
+      my %parent_tbl = (tbl => $tbl);
+      $parent_tbl{db} = $db if $db;
+
+      if ( $parent !~ m/\./ && $opts->{database} ) {
+         $parent = $q->quote($opts->{database}) . ".$parent";
+      }
+
+      $fks->{$name} = {
+         name           => $name,
+         colnames       => $cols,
+         cols           => [ map { s/[ `]+//g; $_; } split(',', $cols) ],
+         parent_tbl     => \%parent_tbl,
+         parent_tblname => $parent,
+         parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
+         parent_colnames=> $parent_cols,
+         ddl            => $fk,
+      };
+   }
+
+   return $fks;
+}
+
+sub remove_auto_increment {
+   my ( $self, $ddl ) = @_;
+   $ddl =~ s/(^\).*?) AUTO_INCREMENT=\d+\b/$1/m;
+   return $ddl;
+}
+
+sub remove_secondary_indexes {
+   my ( $self, $ddl ) = @_;
+   my $sec_indexes_ddl;
+   my $tbl_struct = $self->parse($ddl);
+
+   if ( ($tbl_struct->{engine} || '') =~ m/InnoDB/i ) {
+      my $clustered_key = $tbl_struct->{clustered_key};
+      $clustered_key  ||= '';
+
+      my @sec_indexes   = map {
+         my $key_def = $_->{ddl};
+         $key_def =~ s/([\(\)])/\\$1/g;
+         $ddl =~ s/\s+$key_def//i;
+
+         my $key_ddl = "ADD $_->{ddl}";
+         $key_ddl   .= ',' unless $key_ddl =~ m/,$/;
+         $key_ddl;
+      }
+      grep { $_->{name} ne $clustered_key }
+      values %{$tbl_struct->{keys}};
+      MKDEBUG && _d('Secondary indexes:', Dumper(\@sec_indexes));
+
+      if ( @sec_indexes ) {
+         $sec_indexes_ddl = join(' ', @sec_indexes);
+         $sec_indexes_ddl =~ s/,$//;
+      }
+
+      $ddl =~ s/,(\n\) )/$1/s;
+   }
+   else {
+      MKDEBUG && _d('Not removing secondary indexes from',
+         $tbl_struct->{engine}, 'table');
+   }
+
+   return $ddl, $sec_indexes_ddl, $tbl_struct;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TableParser package
+# ###########################################################################
+
+# ###########################################################################
+# MySQLDump package 6345
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/MySQLDump.pm
+#   trunk/common/t/MySQLDump.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package MySQLDump;
+
+use strict;
+use warnings FATAL => 'all';
+
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+( our $before = <<'EOF') =~ s/^   //gm;
+   /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+   /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+   /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+   /*!40101 SET NAMES utf8 */;
+   /*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+   /*!40103 SET TIME_ZONE='+00:00' */;
+   /*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+   /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+   /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+   /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+EOF
+
+( our $after = <<'EOF') =~ s/^   //gm;
+   /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+   /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+   /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+   /*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+   /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+   /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+   /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+   /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+EOF
+
+sub new {
+   my ( $class, %args ) = @_;
+   my $self = {
+      cache => 0,  # Afaik no script uses this cache any longer because
+   };
+   return bless $self, $class;
+}
+
+sub dump {
+   my ( $self, $dbh, $quoter, $db, $tbl, $what ) = @_;
+
+   if ( $what eq 'table' ) {
+      my $ddl = $self->get_create_table($dbh, $quoter, $db, $tbl);
+      return unless $ddl;
+      if ( $ddl->[0] eq 'table' ) {
+         return $before
+            . 'DROP TABLE IF EXISTS ' . $quoter->quote($tbl) . ";\n"
+            . $ddl->[1] . ";\n";
+      }
+      else {
+         return 'DROP TABLE IF EXISTS ' . $quoter->quote($tbl) . ";\n"
+            . '/*!50001 DROP VIEW IF EXISTS '
+            . $quoter->quote($tbl) . "*/;\n/*!50001 "
+            . $self->get_tmp_table($dbh, $quoter, $db, $tbl) . "*/;\n";
+      }
+   }
+   elsif ( $what eq 'triggers' ) {
+      my $trgs = $self->get_triggers($dbh, $quoter, $db, $tbl);
+      if ( $trgs && @$trgs ) {
+         my $result = $before . "\nDELIMITER ;;\n";
+         foreach my $trg ( @$trgs ) {
+            if ( $trg->{sql_mode} ) {
+               $result .= qq{/*!50003 SET SESSION SQL_MODE='$trg->{sql_mode}' */;;\n};
+            }
+            $result .= "/*!50003 CREATE */ ";
+            if ( $trg->{definer} ) {
+               my ( $user, $host )
+                  = map { s/'/''/g; "'$_'"; }
+                    split('@', $trg->{definer}, 2);
+               $result .= "/*!50017 DEFINER=$user\@$host */ ";
+            }
+            $result .= sprintf("/*!50003 TRIGGER %s %s %s ON %s\nFOR EACH ROW %s */;;\n\n",
+               $quoter->quote($trg->{trigger}),
+               @{$trg}{qw(timing event)},
+               $quoter->quote($trg->{table}),
+               $trg->{statement});
+         }
+         $result .= "DELIMITER ;\n\n/*!50003 SET SESSION SQL_MODE=\@OLD_SQL_MODE */;\n\n";
+         return $result;
+      }
+      else {
+         return undef;
+      }
+   }
+   elsif ( $what eq 'view' ) {
+      my $ddl = $self->get_create_table($dbh, $quoter, $db, $tbl);
+      return '/*!50001 DROP TABLE IF EXISTS ' . $quoter->quote($tbl) . "*/;\n"
+         . '/*!50001 DROP VIEW IF EXISTS ' . $quoter->quote($tbl) . "*/;\n"
+         . '/*!50001 ' . $ddl->[1] . "*/;\n";
+   }
+   else {
+      die "You didn't say what to dump.";
+   }
+}
+
+sub _use_db {
+   my ( $self, $dbh, $quoter, $new ) = @_;
+   if ( !$new ) {
+      MKDEBUG && _d('No new DB to use');
+      return;
+   }
+   my $sql = 'USE ' . $quoter->quote($new);
+   MKDEBUG && _d($dbh, $sql);
+   $dbh->do($sql);
+   return;
+}
+
+sub get_create_table {
+   my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
+   if ( !$self->{cache} || !$self->{tables}->{$db}->{$tbl} ) {
+      my $sql = '/*!40101 SET @OLD_SQL_MODE := @@SQL_MODE, '
+         . q{@@SQL_MODE := REPLACE(REPLACE(@@SQL_MODE, 'ANSI_QUOTES', ''), ',,', ','), }
+         . '@OLD_QUOTE := @@SQL_QUOTE_SHOW_CREATE, '
+         . '@@SQL_QUOTE_SHOW_CREATE := 1 */';
+      MKDEBUG && _d($sql);
+      eval { $dbh->do($sql); };
+      MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);
+      $self->_use_db($dbh, $quoter, $db);
+      $sql = "SHOW CREATE TABLE " . $quoter->quote($db, $tbl);
+      MKDEBUG && _d($sql);
+      my $href;
+      eval { $href = $dbh->selectrow_hashref($sql); };
+      if ( $EVAL_ERROR ) {
+         warn "Failed to $sql.  The table may be damaged.\nError: $EVAL_ERROR";
+         return;
+      }
+
+      $sql = '/*!40101 SET @@SQL_MODE := @OLD_SQL_MODE, '
+         . '@@SQL_QUOTE_SHOW_CREATE := @OLD_QUOTE */';
+      MKDEBUG && _d($sql);
+      $dbh->do($sql);
+      my ($key) = grep { m/create table/i } keys %$href;
+      if ( $key ) {
+         MKDEBUG && _d('This table is a base table');
+         $self->{tables}->{$db}->{$tbl} = [ 'table', $href->{$key} ];
+      }
+      else {
+         MKDEBUG && _d('This table is a view');
+         ($key) = grep { m/create view/i } keys %$href;
+         $self->{tables}->{$db}->{$tbl} = [ 'view', $href->{$key} ];
+      }
+   }
+   return $self->{tables}->{$db}->{$tbl};
+}
+
+sub get_columns {
+   my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
+   MKDEBUG && _d('Get columns for', $db, $tbl);
+   if ( !$self->{cache} || !$self->{columns}->{$db}->{$tbl} ) {
+      $self->_use_db($dbh, $quoter, $db);
+      my $sql = "SHOW COLUMNS FROM " . $quoter->quote($db, $tbl);
+      MKDEBUG && _d($sql);
+      my $cols = $dbh->selectall_arrayref($sql, { Slice => {} });
+
+      $self->{columns}->{$db}->{$tbl} = [
+         map {
+            my %row;
+            @row{ map { lc $_ } keys %$_ } = values %$_;
+            \%row;
+         } @$cols
+      ];
+   }
+   return $self->{columns}->{$db}->{$tbl};
+}
+
+sub get_tmp_table {
+   my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
+   my $result = 'CREATE TABLE ' . $quoter->quote($tbl) . " (\n";
+   $result .= join(",\n",
+      map { '  ' . $quoter->quote($_->{field}) . ' ' . $_->{type} }
+      @{$self->get_columns($dbh, $quoter, $db, $tbl)});
+   $result .= "\n)";
+   MKDEBUG && _d($result);
+   return $result;
+}
+
+sub get_triggers {
+   my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
+   if ( !$self->{cache} || !$self->{triggers}->{$db} ) {
+      $self->{triggers}->{$db} = {};
+      my $sql = '/*!40101 SET @OLD_SQL_MODE := @@SQL_MODE, '
+         . q{@@SQL_MODE := REPLACE(REPLACE(@@SQL_MODE, 'ANSI_QUOTES', ''), ',,', ','), }
+         . '@OLD_QUOTE := @@SQL_QUOTE_SHOW_CREATE, '
+         . '@@SQL_QUOTE_SHOW_CREATE := 1 */';
+      MKDEBUG && _d($sql);
+      eval { $dbh->do($sql); };
+      MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);
+      $sql = "SHOW TRIGGERS FROM " . $quoter->quote($db);
+      MKDEBUG && _d($sql);
+      my $sth = $dbh->prepare($sql);
+      $sth->execute();
+      if ( $sth->rows ) {
+         my $trgs = $sth->fetchall_arrayref({});
+         foreach my $trg (@$trgs) {
+            my %trg;
+            @trg{ map { lc $_ } keys %$trg } = values %$trg;
+            push @{ $self->{triggers}->{$db}->{ $trg{table} } }, \%trg;
+         }
+      }
+      $sql = '/*!40101 SET @@SQL_MODE := @OLD_SQL_MODE, '
+         . '@@SQL_QUOTE_SHOW_CREATE := @OLD_QUOTE */';
+      MKDEBUG && _d($sql);
+      $dbh->do($sql);
+   }
+   if ( $tbl ) {
+      return $self->{triggers}->{$db}->{$tbl};
+   }
+   return values %{$self->{triggers}->{$db}};
+}
+
+sub get_databases {
+   my ( $self, $dbh, $quoter, $like ) = @_;
+   if ( !$self->{cache} || !$self->{databases} || $like ) {
+      my $sql = 'SHOW DATABASES';
+      my @params;
+      if ( $like ) {
+         $sql .= ' LIKE ?';
+         push @params, $like;
+      }
+      my $sth = $dbh->prepare($sql);
+      MKDEBUG && _d($sql, @params);
+      $sth->execute( @params );
+      my @dbs = map { $_->[0] } @{$sth->fetchall_arrayref()};
+      $self->{databases} = \@dbs unless $like;
+      return @dbs;
+   }
+   return @{$self->{databases}};
+}
+
+sub get_table_status {
+   my ( $self, $dbh, $quoter, $db, $like ) = @_;
+   if ( !$self->{cache} || !$self->{table_status}->{$db} || $like ) {
+      my $sql = "SHOW TABLE STATUS FROM " . $quoter->quote($db);
+      my @params;
+      if ( $like ) {
+         $sql .= ' LIKE ?';
+         push @params, $like;
+      }
+      MKDEBUG && _d($sql, @params);
+      my $sth = $dbh->prepare($sql);
+      $sth->execute(@params);
+      my @tables = @{$sth->fetchall_arrayref({})};
+      @tables = map {
+         my %tbl; # Make a copy with lowercased keys
+         @tbl{ map { lc $_ } keys %$_ } = values %$_;
+         $tbl{engine} ||= $tbl{type} || $tbl{comment};
+         delete $tbl{type};
+         \%tbl;
+      } @tables;
+      $self->{table_status}->{$db} = \@tables unless $like;
+      return @tables;
+   }
+   return @{$self->{table_status}->{$db}};
+}
+
+sub get_table_list {
+   my ( $self, $dbh, $quoter, $db, $like ) = @_;
+   if ( !$self->{cache} || !$self->{table_list}->{$db} || $like ) {
+      my $sql = "SHOW /*!50002 FULL*/ TABLES FROM " . $quoter->quote($db);
+      my @params;
+      if ( $like ) {
+         $sql .= ' LIKE ?';
+         push @params, $like;
+      }
+      MKDEBUG && _d($sql, @params);
+      my $sth = $dbh->prepare($sql);
+      $sth->execute(@params);
+      my @tables = @{$sth->fetchall_arrayref()};
+      @tables = map {
+         my %tbl = (
+            name   => $_->[0],
+            engine => ($_->[1] || '') eq 'VIEW' ? 'VIEW' : '',
+         );
+         \%tbl;
+      } @tables;
+      $self->{table_list}->{$db} = \@tables unless $like;
+      return @tables;
+   }
+   return @{$self->{table_list}->{$db}};
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End MySQLDump package
+# ###########################################################################
+
+# ###########################################################################
+# TableNibbler package 5266
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableNibbler.pm
+#   trunk/common/t/TableNibbler.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package TableNibbler;
+
+use strict;
+use warnings FATAL => 'all';
+
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(TableParser Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = { %args };
+   return bless $self, $class;
+}
+
+sub generate_asc_stmt {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(tbl_struct index);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless defined $args{$arg};
+   }
+   my ($tbl_struct, $index) = @args{@required_args};
+   my @cols = $args{cols}  ? @{$args{cols}} : @{$tbl_struct->{cols}};
+   my $q    = $self->{Quoter};
+
+   die "Index '$index' does not exist in table"
+      unless exists $tbl_struct->{keys}->{$index};
+
+   my @asc_cols = @{$tbl_struct->{keys}->{$index}->{cols}};
+   my @asc_slice;
+
+   @asc_cols = @{$tbl_struct->{keys}->{$index}->{cols}};
+   MKDEBUG && _d('Will ascend index', $index);
+   MKDEBUG && _d('Will ascend columns', join(', ', @asc_cols));
+   if ( $args{asc_first} ) {
+      @asc_cols = $asc_cols[0];
+      MKDEBUG && _d('Ascending only first column');
+   }
+
+   my %col_posn = do { my $i = 0; map { $_ => $i++ } @cols };
+   foreach my $col ( @asc_cols ) {
+      if ( !exists $col_posn{$col} ) {
+         push @cols, $col;
+         $col_posn{$col} = $#cols;
+      }
+      push @asc_slice, $col_posn{$col};
+   }
+   MKDEBUG && _d('Will ascend, in ordinal position:', join(', ', @asc_slice));
+
+   my $asc_stmt = {
+      cols  => \@cols,
+      index => $index,
+      where => '',
+      slice => [],
+      scols => [],
+   };
+
+   if ( @asc_slice ) {
+      my $cmp_where;
+      foreach my $cmp ( qw(< <= >= >) ) {
+         $cmp_where = $self->generate_cmp_where(
+            type        => $cmp,
+            slice       => \@asc_slice,
+            cols        => \@cols,
+            quoter      => $q,
+            is_nullable => $tbl_struct->{is_nullable},
+         );
+         $asc_stmt->{boundaries}->{$cmp} = $cmp_where->{where};
+      }
+      my $cmp = $args{asc_only} ? '>' : '>=';
+      $asc_stmt->{where} = $asc_stmt->{boundaries}->{$cmp};
+      $asc_stmt->{slice} = $cmp_where->{slice};
+      $asc_stmt->{scols} = $cmp_where->{scols};
+   }
+
+   return $asc_stmt;
+}
+
+sub generate_cmp_where {
+   my ( $self, %args ) = @_;
+   foreach my $arg ( qw(type slice cols is_nullable) ) {
+      die "I need a $arg arg" unless defined $args{$arg};
+   }
+   my @slice       = @{$args{slice}};
+   my @cols        = @{$args{cols}};
+   my $is_nullable = $args{is_nullable};
+   my $type        = $args{type};
+   my $q           = $self->{Quoter};
+
+   (my $cmp = $type) =~ s/=//;
+
+   my @r_slice;    # Resulting slice columns, by ordinal
+   my @r_scols;    # Ditto, by name
+
+   my @clauses;
+   foreach my $i ( 0 .. $#slice ) {
+      my @clause;
+
+      foreach my $j ( 0 .. $i - 1 ) {
+         my $ord = $slice[$j];
+         my $col = $cols[$ord];
+         my $quo = $q->quote($col);
+         if ( $is_nullable->{$col} ) {
+            push @clause, "((? IS NULL AND $quo IS NULL) OR ($quo = ?))";
+            push @r_slice, $ord, $ord;
+            push @r_scols, $col, $col;
+         }
+         else {
+            push @clause, "$quo = ?";
+            push @r_slice, $ord;
+            push @r_scols, $col;
+         }
+      }
+
+      my $ord = $slice[$i];
+      my $col = $cols[$ord];
+      my $quo = $q->quote($col);
+      my $end = $i == $#slice; # Last clause of the whole group.
+      if ( $is_nullable->{$col} ) {
+         if ( $type =~ m/=/ && $end ) {
+            push @clause, "(? IS NULL OR $quo $type ?)";
+         }
+         elsif ( $type =~ m/>/ ) {
+            push @clause, "((? IS NULL AND $quo IS NOT NULL) OR ($quo $cmp ?))";
+         }
+         else { # If $type =~ m/</ ) {
+            push @clause, "((? IS NOT NULL AND $quo IS NULL) OR ($quo $cmp ?))";
+         }
+         push @r_slice, $ord, $ord;
+         push @r_scols, $col, $col;
+      }
+      else {
+         push @r_slice, $ord;
+         push @r_scols, $col;
+         push @clause, ($type =~ m/=/ && $end ? "$quo $type ?" : "$quo $cmp ?");
+      }
+
+      push @clauses, '(' . join(' AND ', @clause) . ')';
+   }
+   my $result = '(' . join(' OR ', @clauses) . ')';
+   my $where = {
+      slice => \@r_slice,
+      scols => \@r_scols,
+      where => $result,
+   };
+   return $where;
+}
+
+sub generate_del_stmt {
+   my ( $self, %args ) = @_;
+
+   my $tbl  = $args{tbl_struct};
+   my @cols = $args{cols} ? @{$args{cols}} : ();
+   my $tp   = $self->{TableParser};
+   my $q    = $self->{Quoter};
+
+   my @del_cols;
+   my @del_slice;
+
+   my $index = $tp->find_best_index($tbl, $args{index});
+   die "Cannot find an ascendable index in table" unless $index;
+
+   if ( $index ) {
+      @del_cols = @{$tbl->{keys}->{$index}->{cols}};
+   }
+   else {
+      @del_cols = @{$tbl->{cols}};
+   }
+   MKDEBUG && _d('Columns needed for DELETE:', join(', ', @del_cols));
+
+   my %col_posn = do { my $i = 0; map { $_ => $i++ } @cols };
+   foreach my $col ( @del_cols ) {
+      if ( !exists $col_posn{$col} ) {
+         push @cols, $col;
+         $col_posn{$col} = $#cols;
+      }
+      push @del_slice, $col_posn{$col};
+   }
+   MKDEBUG && _d('Ordinals needed for DELETE:', join(', ', @del_slice));
+
+   my $del_stmt = {
+      cols  => \@cols,
+      index => $index,
+      where => '',
+      slice => [],
+      scols => [],
+   };
+
+   my @clauses;
+   foreach my $i ( 0 .. $#del_slice ) {
+      my $ord = $del_slice[$i];
+      my $col = $cols[$ord];
+      my $quo = $q->quote($col);
+      if ( $tbl->{is_nullable}->{$col} ) {
+         push @clauses, "((? IS NULL AND $quo IS NULL) OR ($quo = ?))";
+         push @{$del_stmt->{slice}}, $ord, $ord;
+         push @{$del_stmt->{scols}}, $col, $col;
+      }
+      else {
+         push @clauses, "$quo = ?";
+         push @{$del_stmt->{slice}}, $ord;
+         push @{$del_stmt->{scols}}, $col;
+      }
+   }
+
+   $del_stmt->{where} = '(' . join(' AND ', @clauses) . ')';
+
+   return $del_stmt;
+}
+
+sub generate_ins_stmt {
+   my ( $self, %args ) = @_;
+   foreach my $arg ( qw(ins_tbl sel_cols) ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $ins_tbl  = $args{ins_tbl};
+   my @sel_cols = @{$args{sel_cols}};
+
+   die "You didn't specify any SELECT columns" unless @sel_cols;
+
+   my @ins_cols;
+   my @ins_slice;
+   for my $i ( 0..$#sel_cols ) {
+      next unless $ins_tbl->{is_col}->{$sel_cols[$i]};
+      push @ins_cols, $sel_cols[$i];
+      push @ins_slice, $i;
+   }
+
+   return {
+      cols  => \@ins_cols,
+      slice => \@ins_slice,
+   };
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TableNibbler package
+# ###########################################################################
+
+# ###########################################################################
+# Schema package 7565
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Schema.pm
+#   trunk/common/t/Schema.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Schema;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my $self = {
+      %args,
+      schema  => {},  # keyed on db->tbl
+   };
+   return bless $self, $class;
+}
+
+sub get_schema {
+   my ( $self ) = @_;
+   return $self->{schema};
+}
+
+sub get_table {
+   my ( $self, $db_name, $tbl_name ) = @_;
+   if ( exists $self->{schema}->{$db_name}
+        && exists $self->{schema}->{$db_name}->{$tbl_name} ) {
+      return $self->{schema}->{$db_name}->{$tbl_name};
+   }
+   return;
+}
+
+
+
+sub add_schema_object {
+   my ( $self, $schema_object ) = @_;
+   die "I need a schema_object argument" unless $schema_object;
+
+   my ($db, $tbl) = @{$schema_object}{qw(db tbl)};
+   if ( !$db || !$tbl ) {
+      warn "No database or table for schema object";
+      return;
+   }
+
+   my $tbl_struct = $schema_object->{tbl_struct};
+   if ( !$tbl_struct ) {
+      warn "No table structure for $db.$tbl";
+      return;
+   }
+
+   $self->{schema}->{lc $db}->{lc $tbl} = $schema_object;
+
+
+   return;
+}
+
+sub find_column {
+   my ( $self, %args ) = @_;
+   my $ignore = $args{ignore};
+   my $schema = $self->{schema};
+
+   my ($col, $tbl, $db);
+   if ( my $col_name = $args{col_name} ) {
+      ($col, $tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $col_name;
+      MKDEBUG && _d('Column', $col_name, 'has db', $db, 'tbl', $tbl,
+         'col', $col);
+   }
+   else {
+      ($col, $tbl, $db) = @args{qw(col tbl db)};
+   }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+   $col = lc $col;
+
+   if ( !$col ) {
+      MKDEBUG && _d('No column specified or parsed');
+      return;
+   }
+   MKDEBUG && _d('Finding column', $col, 'in', $db, $tbl);
+
+   if ( $db && !$schema->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'does not exist');
+      return;
+   }
+
+   if ( $db && $tbl && !$schema->{$db}->{$tbl} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not exist in database', $db);
+      return;
+   }
+
+   my @tbls;
+   my @search_dbs = $db ? ($db) : keys %$schema;
+   DATABASE:
+   foreach my $search_db ( @search_dbs ) {
+      my @search_tbls = $tbl ? ($tbl) : keys %{$schema->{$search_db}};
+
+      TABLE:
+      foreach my $search_tbl ( @search_tbls ) {
+         next DATABASE unless exists $schema->{$search_db}->{$search_tbl};
+
+         if ( $ignore
+              && grep { $_->{db} eq $search_db && $_->{tbl} eq $search_tbl }
+                 @$ignore ) {
+            MKDEBUG && _d('Ignoring', $search_db, $search_tbl, $col);
+            next TABLE;
+         }
+
+         my $tbl = $schema->{$search_db}->{$search_tbl};
+         if ( $tbl->{tbl_struct}->{is_col}->{$col} ) {
+            MKDEBUG && _d('Column', $col, 'exists in', $tbl->{db}, $tbl->{tbl});
+            push @tbls, $tbl;
+         }
+      }
+   }
+
+   return \@tbls;
+}
+
+sub find_table {
+   my ( $self, %args ) = @_;
+   my $ignore = $args{ignore};
+   my $schema = $self->{schema};
+
+   my ($tbl, $db);
+   if ( my $tbl_name = $args{tbl_name} ) {
+      ($tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $tbl_name;
+      MKDEBUG && _d('Table', $tbl_name, 'has db', $db, 'tbl', $tbl);
+   }
+   else {
+      ($tbl, $db) = @args{qw(tbl db)};
+   }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+
+   if ( !$tbl ) {
+      MKDEBUG && _d('No table specified or parsed');
+      return;
+   }
+   MKDEBUG && _d('Finding table', $tbl, 'in', $db);
+
+   if ( $db && !$schema->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'does not exist');
+      return;
+   }
+
+   if ( $db && $tbl && !$schema->{$db}->{$tbl} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not exist in database', $db);
+      return;
+   }
+
+   my @dbs;
+   my @search_dbs = $db ? ($db) : keys %$schema;
+   DATABASE:
+   foreach my $search_db ( @search_dbs ) {
+      if ( $ignore && grep { $_->{db} eq $search_db } @$ignore ) {
+         MKDEBUG && _d('Ignoring', $search_db);
+         next DATABASE;
+      }
+
+      if ( exists $schema->{$search_db}->{$tbl} ) {
+         MKDEBUG && _d('Table', $tbl, 'exists in', $search_db);
+         push @dbs, $search_db;
+      }
+   }
+
+   return \@dbs;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End Schema package
+# ###########################################################################
+
+# ###########################################################################
+# SchemaIterator package 7547
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/SchemaIterator.pm
+#   trunk/common/t/SchemaIterator.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package SchemaIterator;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+my $open_comment = qr{/\*!\d{5} };
+my $tbl_name     = qr{
+   CREATE\s+
+   (?:TEMPORARY\s+)?
+   TABLE\s+
+   (?:IF NOT EXISTS\s+)?
+   ([^\(]+)
+}x;
+
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(OptionParser Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my ($file_itr, $dbh) = @args{qw(file_itr dbh)};
+   die "I need either a dbh or file_itr argument"
+      if (!$dbh && !$file_itr) || ($dbh && $file_itr);
+
+   my $self = {
+      %args,
+      filters => _make_filters(%args),
+   };
+
+   return bless $self, $class;
+}
+
+sub _make_filters {
+   my ( %args ) = @_;
+   my @required_args = qw(OptionParser Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($o, $q) = @args{@required_args};
+
+   my %filters;
+
+
+   my @simple_filters = qw(
+      databases         tables         engines
+      ignore-databases  ignore-tables  ignore-engines);
+   FILTER:
+   foreach my $filter ( @simple_filters ) {
+      if ( $o->has($filter) ) {
+         my $objs = $o->get($filter);
+         next FILTER unless $objs && scalar keys %$objs;
+         my $is_table = $filter =~ m/table/ ? 1 : 0;
+         foreach my $obj ( keys %$objs ) {
+            die "Undefined value for --$filter" unless $obj;
+            $obj = lc $obj;
+            if ( $is_table ) {
+               my ($db, $tbl) = $q->split_unquote($obj);
+               $db ||= '*';
+               MKDEBUG && _d('Filter', $filter, 'value:', $db, $tbl);
+               $filters{$filter}->{$tbl} = $db;
+            }
+            else { # database
+               MKDEBUG && _d('Filter', $filter, 'value:', $obj);
+               $filters{$filter}->{$obj} = 1;
+            }
+         }
+      }
+   }
+
+   my @regex_filters = qw(
+      databases-regex         tables-regex
+      ignore-databases-regex  ignore-tables-regex);
+   REGEX_FILTER:
+   foreach my $filter ( @regex_filters ) {
+      if ( $o->has($filter) ) {
+         my $pat = $o->get($filter);
+         next REGEX_FILTER unless $pat;
+         $filters{$filter} = qr/$pat/;
+         MKDEBUG && _d('Filter', $filter, 'value:', $filters{$filter});
+      }
+   }
+
+   MKDEBUG && _d('Schema object filters:', Dumper(\%filters));
+   return \%filters;
+}
+
+sub next_schema_object {
+   my ( $self ) = @_;
+
+   my $schema_obj;
+   if ( $self->{file_itr} ) {
+      $schema_obj= $self->_iterate_files();
+   }
+   else { # dbh
+      $schema_obj= $self->_iterate_dbh();
+   }
+
+   if ( $schema_obj ) {
+      if ( $schema_obj->{ddl} && $self->{TableParser} ) {
+         $schema_obj->{tbl_struct}
+            = $self->{TableParser}->parse($schema_obj->{ddl});
+      }
+
+      delete $schema_obj->{ddl} unless $self->{keep_ddl};
+
+      if ( my $schema = $self->{Schema} ) {
+         $schema->add_schema_object($schema_obj);
+      }
+   }
+
+   MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
+   return $schema_obj;
+}
+
+sub _iterate_files {
+   my ( $self ) = @_;
+
+   if ( !$self->{fh} ) {
+      my ($fh, $file) = $self->{file_itr}->();
+      if ( !$fh ) {
+         MKDEBUG && _d('No more files to iterate');
+         return;
+      }
+      $self->{fh}   = $fh;
+      $self->{file} = $file;
+   }
+   my $fh = $self->{fh};
+   MKDEBUG && _d('Getting next schema object from', $self->{file});
+
+   local $INPUT_RECORD_SEPARATOR = '';
+   CHUNK:
+   while (defined(my $chunk = <$fh>)) {
+      if ($chunk =~ m/Database: (\S+)/) {
+         my $db = $1; # XXX
+         $db =~ s/^`//;  # strip leading `
+         $db =~ s/`$//;  # and trailing `
+         if ( $self->database_is_allowed($db) ) {
+            $self->{db} = $db;
+         }
+      }
+      elsif ($self->{db} && $chunk =~ m/CREATE TABLE/) {
+         if ($chunk =~ m/DROP VIEW IF EXISTS/) {
+            MKDEBUG && _d('Table is a VIEW, skipping');
+            next CHUNK;
+         }
+
+         my ($tbl) = $chunk =~ m/$tbl_name/;
+         $tbl      =~ s/^\s*`//;
+         $tbl      =~ s/`\s*$//;
+         if ( $self->table_is_allowed($self->{db}, $tbl) ) {
+            my ($ddl) = $chunk =~ m/^(?:$open_comment)?(CREATE TABLE.+?;)$/ms;
+            if ( !$ddl ) {
+               warn "Failed to parse CREATE TABLE from\n" . $chunk;
+               next CHUNK;
+            }
+            $ddl =~ s/ \*\/;\Z/;/;  # remove end of version comment
+
+            my ($engine) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;   
+
+            if ( !$engine || $self->engine_is_allowed($engine) ) {
+               return {
+                  db  => $self->{db},
+                  tbl => $tbl,
+                  ddl => $ddl,
+               };
+            }
+         }
+      }
+   }  # CHUNK
+
+   MKDEBUG && _d('No more schema objects in', $self->{file});
+   close $self->{fh};
+   $self->{fh} = undef;
+
+   return $self->_iterate_files();
+}
+
+sub _iterate_dbh {
+   my ( $self ) = @_;
+   my $q   = $self->{Quoter};
+   my $dbh = $self->{dbh};
+   MKDEBUG && _d('Getting next schema object from dbh', $dbh);
+
+   if ( !defined $self->{dbs} ) {
+      my $sql = 'SHOW DATABASES';
+      MKDEBUG && _d($sql);
+      my @dbs = grep { $self->database_is_allowed($_) }
+                @{$dbh->selectcol_arrayref($sql)};
+      MKDEBUG && _d('Found', scalar @dbs, 'databases');
+      $self->{dbs} = \@dbs;
+   }
+
+   if ( !$self->{db} ) {
+      $self->{db} = shift @{$self->{dbs}};
+      MKDEBUG && _d('Next database:', $self->{db});
+      return unless $self->{db};
+   }
+
+   if ( !defined $self->{tbls} ) {
+      my $sql = 'SHOW /*!50002 FULL*/ TABLES FROM ' . $q->quote($self->{db});
+      MKDEBUG && _d($sql);
+      my @tbls = map {
+         $_->[0];  # (tbl, type)
+      }
+      grep {
+         my ($tbl, $type) = @$_;
+         $self->table_is_allowed($self->{db}, $tbl)
+            && (!$type || ($type ne 'VIEW'));
+      }
+      @{$dbh->selectall_arrayref($sql)};
+      MKDEBUG && _d('Found', scalar @tbls, 'tables in database', $self->{db});
+      $self->{tbls} = \@tbls;
+   }
+
+   while ( my $tbl = shift @{$self->{tbls}} ) {
+      my $engine;
+      if ( $self->{filters}->{'engines'}
+           || $self->{filters}->{'ignore-engines'} ) {
+         my $sql = "SHOW TABLE STATUS FROM " . $q->quote($self->{db})
+                 . " LIKE \'$tbl\'";
+         MKDEBUG && _d($sql);
+         $engine = $dbh->selectrow_hashref($sql)->{engine};
+         MKDEBUG && _d($tbl, 'uses', $engine, 'engine');
+      }
+
+
+      if ( !$engine || $self->engine_is_allowed($engine) ) {
+         my $ddl;
+         if ( my $du = $self->{MySQLDump} ) {
+            $ddl = $du->get_create_table($dbh, $q, $self->{db}, $tbl)->[1];
+         }
+
+         return {
+            db  => $self->{db},
+            tbl => $tbl,
+            ddl => $ddl,
+         };
+      }
+   }
+
+   MKDEBUG && _d('No more tables in database', $self->{db});
+   $self->{db}   = undef;
+   $self->{tbls} = undef;
+
+   return $self->_iterate_dbh();
+}
+
+sub database_is_allowed {
+   my ( $self, $db ) = @_;
+   die "I need a db argument" unless $db;
+
+   $db = lc $db;
+
+   my $filter = $self->{filters};
+
+   if ( $db =~ m/information_schema|performance_schema|lost\+found/ ) {
+      MKDEBUG && _d('Database', $db, 'is a system database, ignoring');
+      return 0;
+   }
+
+   if ( $self->{filters}->{'ignore-databases'}->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'is in --ignore-databases list');
+      return 0;
+   }
+
+   if ( $filter->{'ignore-databases-regex'}
+        && $db =~ $filter->{'ignore-databases-regex'} ) {
+      MKDEBUG && _d('Database', $db, 'matches --ignore-databases-regex');
+      return 0;
+   }
+
+   if ( $filter->{'databases'}
+        && !$filter->{'databases'}->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'is not in --databases list, ignoring');
+      return 0;
+   }
+
+   if ( $filter->{'databases-regex'}
+        && $db !~ $filter->{'databases-regex'} ) {
+      MKDEBUG && _d('Database', $db, 'does not match --databases-regex, ignoring');
+      return 0;
+   }
+
+   return 1;
+}
+
+sub table_is_allowed {
+   my ( $self, $db, $tbl ) = @_;
+   die "I need a db argument"  unless $db;
+   die "I need a tbl argument" unless $tbl;
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+
+   my $filter = $self->{filters};
+
+   if ( $filter->{'ignore-tables'}->{$tbl}
+        && ($filter->{'ignore-tables'}->{$tbl} eq '*'
+            || $filter->{'ignore-tables'}->{$tbl} eq $db) ) {
+      MKDEBUG && _d('Table', $tbl, 'is in --ignore-tables list');
+      return 0;
+   }
+
+   if ( $filter->{'ignore-tables-regex'}
+        && $tbl =~ $filter->{'ignore-tables-regex'} ) {
+      MKDEBUG && _d('Table', $tbl, 'matches --ignore-tables-regex');
+      return 0;
+   }
+
+   if ( $filter->{'tables'}
+        && !$filter->{'tables'}->{$tbl} ) { 
+      MKDEBUG && _d('Table', $tbl, 'is not in --tables list, ignoring');
+      return 0;
+   }
+
+   if ( $filter->{'tables-regex'}
+        && $tbl !~ $filter->{'tables-regex'} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not match --tables-regex, ignoring');
+      return 0;
+   }
+
+   if ( $filter->{'tables'}
+        && $filter->{'tables'}->{$tbl}
+        && $filter->{'tables'}->{$tbl} ne '*'
+        && $filter->{'tables'}->{$tbl} ne $db ) {
+      MKDEBUG && _d('Table', $tbl, 'is only allowed in database',
+         $filter->{'tables'}->{$tbl});
+      return 0;
+   }
+
+   return 1;
+}
+
+sub engine_is_allowed {
+   my ( $self, $engine ) = @_;
+   die "I need an engine argument" unless $engine;
+
+   $engine = lc $engine;
+
+   my $filter = $self->{filters};
+
+   if ( $filter->{'ignore-engines'}->{$engine} ) {
+      MKDEBUG && _d('Engine', $engine, 'is in --ignore-databases list');
+      return 0;
+   }
+
+   if ( $filter->{'engines'}
+        && !$filter->{'engines'}->{$engine} ) {
+      MKDEBUG && _d('Engine', $engine, 'is not in --engines list, ignoring');
+      return 0;
+   }
+
+   return 1;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End SchemaIterator package
+# ###########################################################################
+
+# ###########################################################################
+# ForeignKeyIterator package 7613
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/ForeignKeyIterator.pm
+#   trunk/common/t/ForeignKeyIterator.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package ForeignKeyIterator;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(db tbl Schema SchemaIterator TableParser Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   MKDEBUG && _d('Reverse iteration:', $args{reverse} ? 'yes' : 'no');
+   my $self = {
+      %args,
+   };
+
+   return bless $self, $class;
+}
+
+sub next_schema_object {
+   my ( $self ) = @_;
+
+   if ( !exists $self->{fk_refs} ) {
+      my @fk_refs = $self->_get_fk_refs();
+      @fk_refs = reverse @fk_refs if !$self->{reverse};
+      MKDEBUG && _d("Foreign key table order:\n",
+         map { "$_->{db}.$_->{tbl}\n" } @fk_refs);
+
+      $self->{original_fk_refs} = \@fk_refs;
+      $self->{fk_refs}          = [@fk_refs]; # copy
+   }
+
+   my $schema_obj = shift @{$self->{fk_refs}};
+   MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
+   return $schema_obj;
+}
+
+sub reset {
+   my ( $self ) = @_;
+   $self->{fk_refs} = [ @{$self->{original_fk_refs}} ]; # copy
+   MKDEBUG && _d('ForeignKeyIterator reset');
+   return;
+}
+
+sub _get_fk_refs {
+   my ( $self ) = @_;
+   my $schema_itr = $self->{SchemaIterator};
+   my $tp         = $self->{TableParser};
+   my $q          = $self->{Quoter};
+   MKDEBUG && _d('Loading schema from SchemaIterator');
+
+   SCHEMA_OBJECT:
+   while ( my $obj = $schema_itr->next_schema_object() ) {
+      my ($db, $tbl) = @{$obj}{qw(db tbl)};
+
+      if ( !$db || !$tbl ) {
+         die "No database or table name for schema object";
+      }
+
+      if ( !$obj->{ddl} ) {
+         die "No CREATE TABLE for $db.$tbl";
+      }
+
+      if ( !$obj->{tbl_struct} ) {
+         die "No table structure for $db.$tbl";
+      }
+
+      my $fks = $tp->get_fks($obj->{ddl}, { database => $db });
+      if ( $fks && scalar values %$fks ) {
+         MKDEBUG && _d('Table', $db, $tbl, 'has foreign keys');
+         $obj->{fk_struct} = $fks;
+         foreach my $fk ( values %$fks ) {
+            my ($parent_db, $parent_tbl) = @{$fk->{parent_tbl}}{qw(db tbl)};
+            if ( !$parent_db ) {
+               MKDEBUG && _d('No fk parent table database,',
+                  'assuming child table database', $tbl->{db});
+               $parent_db = $tbl->{db};
+            }
+            push @{$obj->{references}}, [$parent_db, $parent_tbl];
+         }
+      }
+   }
+
+   return $self->_recurse_fk_references(
+      $self->{Schema},
+      $self->{db},
+      $self->{tbl},
+   );
+}
+
+sub _recurse_fk_references {
+   my ( $self, $schema, $db, $tbl, $seen ) = @_;
+   $seen ||= {};
+
+   if ( $seen && $seen->{"$db$tbl"}++ ) {
+      MKDEBUG && _d('Circular reference, already seen', $db, $tbl);
+      return;
+   }
+   MKDEBUG && _d('Recursing from', $db, $tbl);
+
+   my @fk_refs;
+   my $fk_tbl = $schema->get_table($db, $tbl);
+   if ( $fk_tbl->{references} ) {
+      foreach my $refed_obj ( @{$fk_tbl->{references}} ) {
+         if ( $schema->get_table(@$refed_obj) ) {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
+            push @fk_refs,
+               $self->_recurse_fk_references($schema, @$refed_obj, $seen);
+         }
+         else {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj,
+               'but that table was filtered out');
+         }
+      }
+   }
+
+   MKDEBUG && _d('No more tables referenced by', $db, $tbl);
+   push @fk_refs, $fk_tbl;
+
+   return @fk_refs;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End ForeignKeyIterator package
+# ###########################################################################
+
+# ###########################################################################
+# ColumnMap package 7624
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/ColumnMap.pm
+#   trunk/common/t/ColumnMap.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package ColumnMap;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use constant DST_COL    => 0;  # Dest table column receiving value
+use constant VALUE_TYPE => 1;  # Type of value being inserted
+use constant VALUE      => 2;  # The value being insrted
+
+use constant COLUMN       => 1;
+use constant SELECTED_ROW => 2;
+use constant CONSTANT     => 3;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(src_tbl dst_tbls Schema Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($src_tbl, $dst_tbls, $schema) = @args{@required_args};
+   my $ignore_columns  = $args{ignore_columns};
+   my $constant_values = $args{constant_values};
+   my $column_map      = $args{column_map};
+   my $fk_map          = $args{foreign_key_column_map}; 
+   
+   my %map_once;
+
+   DST_TBL:
+   foreach my $dst_tbl ( @$dst_tbls ) {
+      MKDEBUG && _d('Mapping columns in dest table',
+         $dst_tbl->{db}, $dst_tbl->{tbl});
+
+      my %fk_col;
+      if ( my $fks = $dst_tbl->{fk_struct} ) {
+         foreach my $fk ( values %$fks ) {
+            map { $fk_col{$_} = $fk } @{$fk->{cols}};
+         }
+      }
+
+      my @insert_plan;
+      DST_COL:
+      foreach my $dst_col ( @{$dst_tbl->{tbl_struct}->{cols}} ) {
+         if ( $ignore_columns && $ignore_columns->{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'is ignored');
+            next DST_COL;
+         }
+         
+         if ( $constant_values && defined $constant_values->{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'gets values from contant value');
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               CONSTANT,
+               $constant_values->{$dst_col},
+            ];
+            $src_tbl->{mapped_columns}->{$dst_col}++;
+            next DST_COL;
+         } # const map
+
+         if ( $column_map ) {
+            my $mapped_cols = 0;
+            foreach my $map (
+               grep {
+                     $dst_tbl->{db}  eq $_->{dst_col}->{db}
+                  && $dst_tbl->{tbl} eq $_->{dst_col}->{tbl}
+                  && $dst_col        eq $_->{dst_col}->{col}
+               } @$column_map ) {
+               my $groupno = ($map->{group_number} || 1) - 1;
+               MKDEBUG && _d($dst_col, 'gets values from mapped column',
+                  $map->{src_col}, 'for insert group', $groupno);
+               push @{$insert_plan[$groupno]->{columns}}, [
+                  $dst_col,
+                  COLUMN,
+                  $map->{src_col},
+               ];
+               $src_tbl->{mapped_columns}->{$map->{src_col}}++;
+               if ( $map->{map_once} ) {
+                  $map_once{$dst_col} = 1;
+               }
+               else {
+                  $mapped_cols++;
+               }
+            }
+            next DST_COL if $mapped_cols;
+         } # manual col map
+
+         if ( my $fk = $fk_col{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'is a foreign key column');
+            my $groupno = 0;
+            if ( $fk_map ) {
+               FK_MAP:
+               foreach my $map ( @$fk_map ) {
+                  if (    $dst_tbl->{db}  eq $map->{db}
+                       && $dst_tbl->{tbl} eq $map->{tbl}
+                       && $dst_col        eq $map->{col} )
+                  {
+                     $groupno = ($map->{group_number} || 1) - 1;
+                     last FK_MAP;
+                  }
+               }
+            }
+
+            my $select_row_params = _map_fk(
+               %args,
+               tbl     => $dst_tbl,
+               fk      => $fk,
+               groupno => $groupno,
+            );
+            if ( $select_row_params ) {
+               MKDEBUG && _d($dst_col,'gets values from insert group',$groupno);
+               push @{$insert_plan[0]->{columns}}, [
+                  $dst_col,
+                  SELECTED_ROW,
+                  $select_row_params,
+               ];
+               next DST_COL;
+            }
+
+            MKDEBUG && _d('Foreign key column did not map');
+         } # fk map
+
+         if ( $src_tbl->{tbl_struct}->{is_col}->{$dst_col} ) {
+            if ( $map_once{$dst_col} ) {
+               MKDEBUG && _d($dst_col, "is already mapped once");
+               next DST_COL;
+            }
+            if ( $column_map ) {
+               foreach my $map (
+                  grep { $dst_col eq $_->{src_col} } @$column_map )
+               {
+                  if ( $map->{map_once} ) {
+                     MKDEBUG && _d($dst_col, "will be manually mapped");
+                     next DST_COL;
+                  }
+               }
+            }
+
+            MKDEBUG && _d($dst_col, 'gets values from source column', $dst_col);
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               COLUMN,
+               $dst_col,
+            ];
+            $src_tbl->{mapped_columns}->{$dst_col}++;
+            next DST_COL;
+         } # auto col map
+
+         MKDEBUG && _d($dst_col, 'is not mapped');
+      } # DST_COL
+
+      _check_insert_plan(
+         tbl         => $dst_tbl,
+         insert_plan => \@insert_plan,
+      );
+      for my $i ( 0..$#insert_plan ) {
+         $insert_plan[$i]->{group_number}    = $i;
+         $dst_tbl->{last_row_inserted}->[$i] = undef;
+      }
+      $dst_tbl->{insert_plan} = \@insert_plan;
+
+   } # DST_TBL
+
+   my $self = {
+      %args,
+   };
+
+   return bless $self, $class;
+}
+
+sub _map_fk {
+   my ( %args ) = @_;
+   my @required_args = qw(fk tbl Schema);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($fk, $tbl, $schema) = @args{@required_args};
+   my $groupno             = $args{groupno} || 0;
+
+   MKDEBUG && _d('Mapping fk columns in constraint', $fk->{name});
+
+   if ( !$fk->{parent_tbl}->{db} ) {
+      MKDEBUG && _d('No fk parent table database,',
+         'assuming child table database', $tbl->{db});
+      $fk->{parent_tbl}->{db} = $tbl->{db};
+   }
+   my $parent_tbl = $schema->get_table(@{$fk->{parent_tbl}}{qw(db tbl)}); 
+   if ( !$parent_tbl ) {
+      MKDEBUG && _d('Parent table', @{$fk->{parent_tbl}}{qw(db tbl)},
+         'was filtered out');
+      return;
+   }
+
+   my @fk_cols     = @{$fk->{cols}};
+   my @parent_cols = @{$fk->{parent_cols}};
+   my %cols;
+   FK_COLUMN:
+   for my $i ( 0..$#fk_cols ) {
+      my $fk_col     = $fk_cols[$i];
+      my $parent_col = $parent_cols[$i];
+      MKDEBUG && _d($fk_col, 'references',
+         $parent_tbl->{db}, $parent_tbl->{tbl}, $parent_col);
+      $cols{$parent_col} = $fk_col;
+      if ( $args{print} ) {
+         print "-- Foreign key column $tbl->{db}.$tbl->{tbl}.$fk_col "
+             . "maps to column "
+             . "$parent_tbl->{db}.$parent_tbl->{tbl}.$parent_col\n";
+      }
+   }
+
+   my $select_row_params = {
+      tbl   => $parent_tbl,
+      cols  => \%cols,
+      where => \$parent_tbl->{last_row_inserted}->[$groupno], # ref to hashref
+   };
+   return $select_row_params;
+}
+
+sub _check_insert_plan {
+   my ( %args ) = @_;
+   my @required_args = qw(tbl insert_plan);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tbl, $insert_plan) = @args{@required_args};
+
+   foreach my $insert_group ( @$insert_plan ) {
+      my %seen;
+      foreach my $col ( @{$insert_group->{columns}} ) {
+         if ( my $first_col = $seen{$col->[DST_COL]} ) {
+            die "Two values are mapped to $tbl->{db}.$tbl->{tbl}."
+               . $col->[DST_COL] . ": "
+               . _print_column_value($col)
+               . " and " . _print_column_value($first_col) . "\n";
+         }
+         $seen{$col->[DST_COL]} = $col;
+      }
+   }
+
+   return;
+}
+
+sub _print_column_value {
+   my ( $col ) = @_;
+   return "" unless $col;
+   my $str = (  $col->[VALUE_TYPE] == COLUMN       ? 'column'
+              : $col->[VALUE_TYPE] == CONSTANT     ? 'constant'
+              : $col->[VALUE_TYPE] == SELECTED_ROW ? 'selected row'
+              :                                      'invalid type');
+   if ( $col->[VALUE_TYPE] != SELECTED_ROW ) {
+      $str .= ' ' . $col->[VALUE];
+   }
+   return $str;
+}
+
+sub _select_row {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh select_row_params);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $params) = @args{@required_args};
+   my $tbl            = $params->{tbl};
+   my $where          = $params->{where};  # this is a ref to a hashref
+   MKDEBUG && _d('Selecting row from', $tbl->{db}, $tbl->{tbl});
+
+   my $sth = $params->{select_row_sth} ||= $self->_make_select_row_sth(%args);
+   MKDEBUG && _d($sth->{Statement});
+
+   my @params = map { $$where->{$_} } sort keys %$$where;
+   print $sth->{Statement}, "\n" if $self->{print};
+   $sth->execute(@params);
+
+   my $row = $sth->fetchrow_hashref();
+   MKDEBUG && _d('Selected row:', Dumper($row));
+
+   $sth->finish();
+   return $row;
+}
+
+sub _make_select_row_sth {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh select_row_params);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $params)       = @args{@required_args};
+   my ($tbl, $cols, $where) = @{$params}{qw(tbl cols where)};
+   my $q                    = $self->{Quoter};
+
+   my $sql
+      = "SELECT "
+      . join(', ', map {
+            $q->quote($_) . " AS " . $q->quote($cols->{$_}) } sort keys %$cols)
+      . " FROM " . $q->quote($tbl->{db}, $tbl->{tbl})
+      . " WHERE " . join(' AND ',map { $q->quote($_)."=?" } sort keys %$$where)
+      . " LIMIT 1";
+
+   my $sth = $args{dbh}->prepare($sql);
+   return $sth;
+}
+
+sub insert_plan {
+   my ( $self, $tbl ) = @_;
+   die "I need a tbl argument" unless $tbl;
+   if ( !$tbl->{insert_plan} ) {
+      MKDEBUG && _d('No insert plan for table', $tbl->{db}, $tbl->{tbl});
+      return;
+   }
+   return $tbl->{insert_plan};
+}
+
+sub mapped_columns {
+   my ( $self, $tbl ) = @_;
+   if ( !$tbl->{mapped_columns} ) {
+      return;
+   }
+   my $cols = sort_columns(
+      tbl  => $tbl,
+      cols => [ keys %{$tbl->{mapped_columns}} ],
+   );
+   return $cols;
+}
+
+sub insert_columns {
+   my ( $self, $column_group ) = @_;
+   die "I need a tbl argument" unless $column_group;
+   my @cols;
+   foreach my $col ( @{$column_group->{columns}} ) {
+      push @cols, $col->[DST_COL];
+   }
+   return \@cols;
+}
+
+sub map_values {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(src_row dst_tbl insert_group);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($src_row, $dst_tbl, $insert_group) = @args{@required_args};
+
+   my %dst_row;
+   COLUMN:
+   foreach my $col ( @{$insert_group->{columns}} ) {
+      my ($dst_col, $value_type, $value) = @$col;
+      if ( $value_type == COLUMN ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from column', $value);
+         $dst_row{$dst_col} = $src_row->{$value};
+      }
+      elsif ( $value_type == SELECTED_ROW ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from a selected row');
+         my $selected_row = $self->_select_row(
+            %args,
+            select_row_params => $value,
+         );
+         $dst_row{$dst_col} = $selected_row->{$dst_col};
+      }
+      elsif ( $value_type == CONSTANT ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from a constant value');
+         $dst_row{$dst_col} = $value;
+      }
+      else {
+         die "Invalid value type for $dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col: "
+            . (defined $value_type ? $value_type : '');
+      }
+   }
+
+   MKDEBUG && _d("Mapped values:\n",
+      map {
+         my $col = $_->[DST_COL];
+         "$col=" . (defined $dst_row{$col} ? $dst_row{$col} : 'undef') . "\n"
+      } @{$insert_group->{columns}});
+
+   $dst_tbl->{last_row_inserted}->[$insert_group->{group_number}] = \%dst_row;
+
+   return \%dst_row;
+}
+
+sub sort_columns {
+   my ( %args ) = @_;
+   my @required_args = qw(tbl cols);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $col_pos = $args{tbl}->{tbl_struct}->{col_posn};
+   my $cols    = $args{cols};
+
+   my @sorted_cols
+      = sort { $col_pos->{$a} <=> $col_pos->{$b} } 
+        grep { defined $col_pos->{$_}            }
+        @$cols;
+
+   return \@sorted_cols;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End ColumnMap package
+# ###########################################################################
+
+# ###########################################################################
+# CopyRowsNormalized package 7611
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/CopyRowsNormalized.pm
+#   trunk/common/t/CopyRowsNormalized.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package CopyRowsNormalized;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(src dst ColumnMap TableNibbler Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($src, $dst, $column_map, $nibbler, $q) = @args{@required_args};
+
+   die "No source table" unless $src->{tbl};
+   die "No destination tables" unless $dst->{tbls};
+
+   my $index         = $src->{index}   || 'PRIMARY';
+   my $txn_size      = $args{txn_size} || 1;
+   my $auto_inc_gaps = defined $args{auto_increment_gaps}
+                     ? $args{auto_increment_gaps}
+                     : 1;
+
+   my $asc = $nibbler->generate_asc_stmt(
+      tbl_struct => $src->{tbl}->{tbl_struct},
+      index      => $index,
+      cols       => $column_map->mapped_columns($src->{tbl}),
+      asc_first  => defined $args{asc_first} ? $args{asc_first} : 1,
+      asc_only   => defined $args{asc_only}  ? $args{asc_only}  : 1,
+   );
+
+   my $first_sql   =  "SELECT /*!40001 SQL_NO_CACHE */ "
+                   . join(', ', map { $q->quote($_) } @{$asc->{cols}})
+                   . " FROM " . $q->quote(@{$src->{tbl}}{qw(db tbl)})
+                   . " FORCE INDEX(`$index`)";
+
+   my $next_sql = $first_sql;
+   $next_sql   .= " WHERE $asc->{where}";
+
+   foreach my $sql ( $first_sql, $next_sql ) {
+      $sql .= " LIMIT $txn_size";
+      print '-- ', $sql, "\n" if $args{print};
+   }
+
+   MKDEBUG && _d('First chunk:', $first_sql);
+   MKDEBUG && _d('Next chunk:', $next_sql);
+   my $first_sth = $src->{dbh}->prepare($first_sql);
+   my $next_sth  = $src->{dbh}->prepare($next_sql);
+
+   my @inserts;
+   DST_TBL:
+   foreach my $dst_tbl ( @{$dst->{tbls}} ) {
+      INSERT_GROUP:
+      foreach my $insert_group ( @{$column_map->insert_plan($dst_tbl)} ) {
+         my $cols = $column_map->insert_columns($insert_group);
+         my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
+                  . ($args{insert_ignore}  ? ' IGNORE' : '')
+                  . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+                  . ' (' . join(', ', map { $q->quote($_) } @$cols) . ')'
+                  . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
+
+         $sql .= " /* CopyRowsNormalized "
+                       . "src_tbl:$src->{tbl}->{db}.$src->{tbl}->{tbl} "
+                       . "group:$insert_group->{group_number} "
+                       . "txn_size:$txn_size pid:$PID "
+                       . ($ENV{USER} ? "user:$ENV{USER} " : "")
+                       . "*/";
+
+         MKDEBUG && _d($sql);
+         print '-- ', $sql, "\n" if $args{print};
+
+         my $sth    = $dst->{dbh}->prepare($sql);
+         my $insert = {
+            tbl          => $dst_tbl,
+            tbl_name     => join('.', @{$dst_tbl}{qw(db tbl)}),
+            cols         => $cols,
+            sth          => $sth,
+            insert_group => $insert_group,
+         };
+
+         my $pk = $dst_tbl->{tbl_struct}->{keys}->{PRIMARY};
+         if ( $pk ) {
+            my $auto_inc_col
+               = $dst_tbl->{tbl_struct}->{is_autoinc}->{$pk->{cols}->[0]}
+               ? $pk->{cols}->[0]
+               : undef;
+            MKDEBUG && _d('PRIMARY KEY auto inc col:', $auto_inc_col);
+
+            if ( !$auto_inc_gaps
+                 && $auto_inc_col
+                 && $args{insert_ignore}
+                 && !grep { $_ eq $auto_inc_col } @$cols ) {
+               MKDEBUG && _d('Checking auto inc col before INSERT');
+               my $sql = "SELECT 1"
+                        . " FROM " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+                        . " WHERE "
+                        . join(' AND ', map { $q->quote($_)."=?" } @$cols)
+                       . " LIMIT 1";
+               MKDEBUG && _d($sql);
+               $insert->{check_for_row_sth} = $dst->{dbh}->prepare($sql);
+            }
+         }
+         else {
+            MKDEBUG && _d('Table has no PRIMARY KEY');
+         } 
+
+         push @inserts, $insert;
+      } # INSERT_GROUP
+   } # DST_TBL
+
+   my $start_txn_sth = $dst->{dbh}->prepare('START TRANSACTION');
+   my $commit_sth    = $dst->{dbh}->prepare('COMMIT');
+
+   my $warnings_sth;
+   if ( $args{warnings} && lc($args{warnings}) ne 'ignore' ) {
+      $warnings_sth = $dst->{dbh}->prepare('SHOW WARNINGS');
+   }
+
+   my $self = {
+      %args,
+      asc           => $asc,
+      first_sth     => $first_sth,
+      next_sth      => $next_sth,
+      asc_cols      => $asc->{scols},  # src tbl columns used for nibbling
+      chunkno       => 0,              # incr in _copy_rows_in_chunk()
+      rowno         => 0,
+      start_txn_sth => $start_txn_sth,
+      commit_sth    => $commit_sth,
+      warnings_sth  => $warnings_sth,
+      inserts       => \@inserts,
+   };
+
+   return bless $self, $class;
+}
+
+sub copy {
+   my ( $self, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my @asc_cols = @{$self->{asc_cols}};
+
+   my $sth      = $self->{first_sth};
+   my $last_row = $self->_copy_rows_in_chunk(sth => $sth);
+
+   $sth->finish();
+   $sth = $self->{next_sth};
+   while ( $last_row ) {
+      MKDEBUG && _d('Last row:', Dumper($last_row));
+      $last_row = $self->_copy_rows_in_chunk(
+         sth    => $sth,
+         params => [ @{$last_row}{@asc_cols} ],
+      );
+   }
+
+   MKDEBUG && _d('No more rows');
+   $sth->finish();
+
+   return;
+}
+
+sub _copy_rows_in_chunk {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(sth);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($sth)  = @args{@required_args};
+   my $params = $args{params} ? $args{params} : [];
+
+   my $column_map = $self->{ColumnMap};
+   my $dst_dbh    = $self->{dst}->{dbh};
+   my $dst_tbls   = $self->{dst}->{tbls};
+   my $stats      = $self->{stats};
+   my $print      = $self->{print};
+
+   $self->{chunkno}++;   
+   $stats->{chunks}++ if $stats;
+
+   MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
+   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @$params);
+   if ( $print ) {
+      print $sth->{Statement}, "\n" if $print;
+      print "-- Bind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params)
+         . "\n";
+   }
+
+   $self->{context} = {};
+   $self->{context}->{select_sth}    = $sth;
+   $self->{context}->{select_params} = $params;
+
+   $sth->execute(@$params);
+   MKDEBUG && _d('Got', $sth->rows(), 'rows');
+   return unless $sth->rows();
+
+   if ( $self->{start_txn_sth} ) {
+      MKDEBUG && _d($self->{start_txn_sth}->{Statement});
+      if ( $print ) {
+         print $self->{start_txn_sth}->{Statement}, "\n";
+      }
+      $self->{start_txn_sth}->execute();
+      $stats->{start_transaction}++ if $stats;
+   }
+
+   my $inserts   = $self->{inserts};
+   my $n_inserts = @$inserts - 1;
+   my $last_row;
+   SOURCE_ROW:
+   while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
+      $self->{context}->{src_row} = $src_row;
+      $self->{context}->{chunk_rowno}++;
+      $self->{rowno}++;
+      $stats->{rows_selected}++ if $stats;
+
+      DEST_TABLE:
+      for my $i (0..$n_inserts) {
+         my $insert = $inserts->[$i];
+         $self->{context}->{insert} = $insert;
+
+         my $dst_tbl      = $insert->{tbl};
+         my $dst_cols     = $insert->{cols};
+         my $insert_group = $insert->{insert_group};
+         MKDEBUG && _d('Inserting source row into dest table',
+            $dst_tbl->{db}, $dst_tbl->{tbl},
+            'for insert group', $insert_group->{group_number});
+
+         my $dst_row  = $column_map->map_values(
+            dbh          => $dst_dbh,
+            src_row      => $src_row,
+            dst_tbl      => $dst_tbl,
+            insert_group => $insert_group,
+         );
+         $self->{context}->{dst_row} = $dst_row;
+
+         my $insert_row = 1;
+         if ( my $check_for_row_sth = $insert->{check_for_row_sth} ) {
+            MKDEBUG && _d($check_for_row_sth->{Statement},
+               'bind values:', map { $dst_row->{$_} } @$dst_cols);
+            if ( $print ) {
+               print $check_for_row_sth->{Statement}, "\n";
+               print "-- Bind values: "
+                  . join(', ',
+                     map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+                     @$dst_cols)
+                  . "\n";
+            }
+
+            $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
+            my $row = $check_for_row_sth->fetchrow_arrayref();
+            $check_for_row_sth->finish();
+
+            if ( $row && defined $row->[0] ) {
+               MKDEBUG && _d('Row already exists in dest table');
+               $insert_row = 0;
+               if ( $stats ) {
+                  $stats->{duplicate_rows}++;
+                  $insert->{tbl}->{duplicate_rows}++;
+               }
+            }
+         }
+
+         if ( $insert_row ) {
+            MKDEBUG && _d($insert->{sth}->{Statement},
+               'bind values:', map { $dst_row->{$_} } @$dst_cols);
+            if ( $print ) {
+               print $insert->{sth}->{Statement}, "\n";
+               print "-- Bind values: "
+                  . join(', ',
+                     map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+                     @$dst_cols)
+                  . "\n";
+            }
+            $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
+            if ( $stats ) {
+               $stats->{rows_inserted}++;
+               $insert->{tbl}->{rows_inserted}++;
+            }
+
+            if ( $self->{warnings_sth} ) {
+               MKDEBUG && _d($self->{warnings_sth}->{Statement});
+               if ( $print ) {
+                  print $self->{warnings_sth}->{Statement}, "\n";
+               }
+               $self->{warnings_sth}->execute();
+               $stats->{show_warnings}++ if $stats;
+               my $warnings = $self->{warnings_sth}->fetchall_arrayref();
+               if ( $warnings && @$warnings ) {
+                  foreach my $warning ( @$warnings ) {
+                     print STDERR "Warning after INSERT: ",
+                        join(' ', @$warning), "\n";
+                     $stats->{"warning_" . $warning->[1]}++ if $stats;
+                  }
+                  if ( ($self->{warnings} || '') eq 'die' ) {
+                     die "Dying because of the warnings above"
+                  }
+                  else {
+                     $self->dump_context();
+                  }
+               }
+            }
+         }
+
+         $last_row = $src_row;
+      } # DEST_TABLE
+   } # SOURCE_ROW
+
+   if ( $self->{commit_sth} ) {
+      MKDEBUG && _d($self->{commit_sth}->{Statement});
+      if ( $print ) {
+         print $self->{commit_sth}->{Statement}, "\n";
+      }
+      $self->{commit_sth}->execute();
+      $stats->{commit}++ if $stats;
+   }
+
+   return $last_row;
+}
+
+sub cleanup {
+   my ( $self, %args ) = @_;
+   return;
+}
+
+sub dump_context {
+   my ($self) = @_;
+   local $Data::Dumper::Indent = 0;
+   
+   print STDERR "Error context:\n";
+   print STDERR "\tRow $self->{rowno}, chunk $self->{chunkno}, ",
+      "chunk row ", ($self->{context}->{chunk_rowno} || 0), "\n";
+   if ( my $sth = $self->{context}->{select_sth} ) {
+      print STDERR "\t", $sth->{Statement}, "\n";
+   }
+   if ( my $params = $self->{context}->{select_params} ) {
+      print STDERR "\tBind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params) . "\n";
+   }
+   if ( my $src_row = $self->{context}->{src_row} ) {
+      print STDERR "\tSource row: ", Dumper($src_row), "\n";
+   }
+   if ( my $insert = $self->{context}->{insert} ) {
+      my $dst_cols = $insert->{cols};
+      print STDERR "\t", $insert->{sth}->{Statement}, "\n";
+      if ( my $dst_row = $self->{context}->{dst_row} ) {
+         print STDERR "\tBind values: "
+            . join(', ',
+               map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+               @$dst_cols)
+            . "\n";
+      }
+   }
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End CopyRowsNormalized package
+# ###########################################################################
+
+# ###########################################################################
+# This is a combination of modules and programs in one -- a runnable module.
+# http://www.perl.com/pub/a/2006/07/13/lightning-articles.html?page=last
+# Or, look it up in the Camel book on pages 642 and 643 in the 3rd edition.
+#
+# Check at the end of this package for the call to main() which actually runs
+# the program.
+# ###########################################################################
+package mk_insert_normalized;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub main {
+   @ARGV = @_;  # set global ARGV for this package
+
+   # ########################################################################
+   # Get configuration information.
+   # ########################################################################
+   my $o = new OptionParser();
+   $o->get_specs();
+   $o->get_opts();
+
+   my $dp = $o->DSNParser();
+   $dp->prop('set-vars', $o->get('set-vars'));
+
+   my $src_dsn = $o->get('source');
+   my $dst_dsn = $o->get('dest');
+
+   $o->set('statistics', 1) if $o->get('verify');
+
+   if ( !$o->got('help') ) {
+      foreach my $dsn ( qw(source dest) ) {
+         next unless $o->got($dsn);
+         foreach my $part ( qw(t D) ) {
+            if ( !$o->get($dsn)->{$part} ) {
+               $o->save_error("--$dsn DSN requires a '$part' part")
+            }
+         }
+      }
+
+      if ( my $w = $o->get('warnings') ) {
+         if (!grep {$w eq $_} qw(ignore warn die)) {
+            $o->save_error("Invalid --warnings: $w");
+         }
+      }
+   }
+
+   $o->usage_or_errors();
+
+   # ########################################################################
+   # Make our modules.
+   # ########################################################################
+   my $q  = new Quoter();
+   my $tp = new TableParser(Quoter => $q);
+   my $du = new MySQLDump();
+   my %common_modules = (
+      Quoter       => $q,
+      OptionParser => $o,
+      DSNParser    => $dp,
+      Quoter       => $q,
+      TableParser  => $tp,
+      MySQLDump    => $du,
+   );
+
+   # ########################################################################
+   # Connect to MySQL.
+   # ########################################################################
+   my $src_dbh = get_cxn(dsn => $src_dsn, %common_modules);
+   my $dst_dbh = get_cxn(dsn => $dst_dsn, %common_modules);
+
+   # ########################################################################
+   # Check that source and dest tables exist.
+   # ########################################################################
+   if (!$tp->check_table(dbh=>$src_dbh, db=>$src_dsn->{D}, tbl=>$src_dsn->{t}))
+   {
+      die "Table $src_dsn->{D}.$src_dsn->{t} does not exist on server "
+         . $dp->as_string($src_dsn);
+   }
+   if (!$tp->check_table(dbh=>$dst_dbh, db=>$dst_dsn->{D}, tbl=>$dst_dsn->{t}))
+   {
+      die "Table $dst_dsn->{D}.$dst_dsn->{t} does not exist on server "
+         . $dp->as_string($dst_dsn);
+   }
+
+   foreach my $dsn ( $src_dsn, $dst_dsn ) {
+      map { $dsn->{$_} = lc $dsn->{$_} } qw(D t)
+   }
+   if ( $o->get('print') ) {
+      print "-- Source: " . $dp->as_string($src_dsn) . "\n";
+      print "-- Dest: " . $dp->as_string($dst_dsn) . "\n";
+   }
+
+   # ########################################################################
+   # Daemonize only after (potentially) asking for passwords for --ask-pass.
+   # ########################################################################
+   my $daemon;
+   if ( $o->get('pid') ) {
+      # We're not daemoninzing, it just handles PID stuff.
+      $daemon = new Daemon(o=>$o);
+      $daemon->make_PID_file();
+   }
+
+   # ########################################################################
+   # Parse constant values file.
+   # ########################################################################
+   my $constant_values;
+   if ( my $file = $o->get('constant-values') ) {
+      MKDEBUG && _d('Reading constant values from', $file);
+      if ( $o->get('print') ) {
+         print "-- Constant values:\n";
+      }
+      open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+      while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
+         MKDEBUG && _d($line);
+         my ($col, $val) = $line =~ m/^\s*([^=]+)=(.+)$/;
+         MKDEBUG && _d('col:', $col, 'val:', $val);
+         $constant_values->{$col} = $val;
+         if ( $o->get('print') ) {
+            print "--   $col=" . (defined $val ? $val : '(undefined)') . "\n";
+         }
+      }
+      close $fh;
+   }
+   
+   # ########################################################################
+   # Parse column map file.
+   # ########################################################################
+   my @manual_column_map;
+   if ( my $file = $o->get('column-map') ) {
+      MKDEBUG && _d('Reading column map from', $file);
+      open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+      while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
+         MKDEBUG && _d($line);
+
+         my ($src_col, $dst_col, $opts) = $line =~ m/^\s*(\S+)\s+(\S+)(.*)/;
+         my ($db, $tbl, $col) = split /\./, $dst_col;
+         my @opts = split /\s+/, $opts;
+         my $map = {
+            src_col  => $src_col,
+            dst_col  => { db=>$db, tbl=>$tbl, col=>$col },
+         };
+
+         if ( grep { $_ eq '!' } @opts ) {
+            $map->{map_once} = 1;
+         }
+
+         my @groupno = grep { m/\d+/ } @opts;
+         if ( scalar @groupno ) {
+            die "Column map specifies more than one insert group number: $line"
+               if @groupno > 1;
+            $map->{group_number} = $groupno[0];
+         }
+
+         MKDEBUG && _d(Dumper($map));
+         push @manual_column_map, $map;
+      }
+      close $fh;
+   }
+
+   # ########################################################################
+   # Parse fk column map file.
+   # ########################################################################
+   my @fk_column_map;
+   if ( my $file = $o->get('foreign-key-column-map') ) {
+      MKDEBUG && _d('Reading fk column map from', $file);
+      open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+      while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
+         MKDEBUG && _d($line);
+         my ($fk_col, $groupno) = $line =~ m/^\s*(\S+)\s+(\d+)/;
+         my ($db, $tbl, $col) = split /\./, $fk_col;
+         my $map = {db=>$db, tbl=>$tbl, col=>$col, group_number=>$groupno};
+         MKDEBUG && _d(Dumper($map));
+         push @fk_column_map, $map;
+      }
+      close $fh;
+   }
+
+   # ########################################################################
+   # Start working.
+   # ########################################################################
+   my $schema = new Schema();
+
+   my $schema_itr = new SchemaIterator(
+      dbh          => $dst_dbh,
+      Quoter       => $q,
+      OptionParser => $o,     # schema filters
+      MySQLDump    => $du,    # CREATE TABLE ddl
+      TableParser  => $tp,    # parse ddl into tbl_struct
+      keep_ddl     => 1,      # TableParser::get_fks() in ForeignKeyIterator
+      Schema       => $schema,
+   );
+
+   my $fk_itr = new ForeignKeyIterator(
+      db             => $dst_dsn->{D},
+      tbl            => $dst_dsn->{t},
+      Schema         => $schema,
+      SchemaIterator => $schema_itr,
+      Quoter         => $q,
+      TableParser    => $tp,  # TableParser::get_fks()
+      reverse        => 1,    # insert into child tables then parent db.tbl
+   );
+
+   print "-- INSERT table order:\n" if $o->get('print');
+   my @dst_tbls;
+   while ( my $dst_tbl = $fk_itr->next_schema_object() ) {
+      push @dst_tbls, $dst_tbl;
+      print "--   $dst_tbl->{db}.$dst_tbl->{tbl}\n" if $o->get('print');
+   }
+   my $dst = {
+      dbh  => $dst_dbh,
+      tbls => \@dst_tbls,
+   };
+
+   my $src = {
+      dbh   => $src_dbh,
+      tbl   => $schema->get_table($src_dsn->{D}, $src_dsn->{t}),
+      index => $o->get('chunk-index'),
+   };
+
+   my $column_map = new ColumnMap(
+      src_tbl               => $schema->get_table($src_dsn->{D}, $src_dsn->{t}),
+      dst_tbls              => \@dst_tbls,
+      Schema                => $schema,
+      constant_values       => $constant_values,
+      ignore_columns        => $o->get('ignore-columns'),
+      column_map            => \@manual_column_map,
+      foreign_key_column_map=> \@fk_column_map,
+      print                 => $o->get('print'),
+      Quoter                => $q,
+   );
+   foreach my $dst_tbl ( @dst_tbls ) {
+      if ( !$column_map->insert_plan($dst_tbl) ) {
+         die "No columns in table $src->{tbl}->{db}.$src->{tbl}->{tbl} "
+            . "map to table $dst_tbl->{db}.$dst_tbl->{tbl}.  Either there "
+            . "are not columns with the same name in both tables, or "
+            . "table $dst_tbl->{db}.$dst_tbl->{tbl} does not reference "
+            . "other tables.";
+      }
+   }
+
+   my $stats = {};
+
+   my $copy_rows = new CopyRowsNormalized(
+      src                 => $src,
+      dst                 => $dst,
+      ColumnMap           => $column_map,
+      stats               => $stats,
+      txn_size            => $o->get('txn-size'),
+      print               => $o->get('print'),
+      execute             => $o->get('execute'),
+      replace             => $o->get('replace'),
+      insert_ignore       => $o->get('insert-ignore'),
+      asc_first           => $o->get('ascend-first') ? 1 : 0,
+      auto_increment_gaps => $o->get('auto-increment-gaps'),
+      warnings            => $o->get('check-warnings') ? lc $o->get('warnings')
+                                                       : undef,
+      foreign_keys        => 1,
+      Quoter              => $q,
+      TableNibbler        => new TableNibbler(%common_modules),
+   );
+
+   if ( $o->get('execute') ) {
+      my $n_source_rows;
+      if ( $o->get('verify') ) {
+         my $sql = "SELECT COUNT(*) "
+                 . "FROM ". $q->quote($src_dsn->{D}, $src_dsn->{t})
+                 . " /* --verify */";
+         MKDEBUG && _d($sql);
+         print "-- $sql\n" if $o->get('print');
+         ($n_source_rows) = $src->{dbh}->selectrow_array($sql);
+         print "-- $n_source_rows source table rows\n" if $o->get('print');
+      }
+
+      eval {
+         $copy_rows->copy();
+      };
+      if ( $EVAL_ERROR ) {
+         warn "Copying rows failed: $EVAL_ERROR";
+         print_warnings($src->{dbh}, 'Warning on --source: ');
+         print_warnings($dst->{dbh}, 'Warning on --dest: ');
+         $copy_rows->dump_context();
+         exit 1;
+      } 
+
+      if ( $o->get('statistics') ) {
+         print "-- Statistics\n";
+         my $fmt = "--   %-30s %d\n";
+         foreach my $metric ( sort keys %$stats ) {
+            printf $fmt, $metric, ($stats->{$metric} || 0);
+         }
+
+         print "-- Rows inserted\n";
+         foreach my $dst_tbl ( @dst_tbls ) {
+            printf $fmt, join('.', @{$dst_tbl}{qw(db tbl)}),
+               $dst_tbl->{rows_inserted} || 0;
+         }
+         print "-- Duplicate rows\n";
+         foreach my $dst_tbl ( @dst_tbls ) {
+            printf $fmt, join('.', @{$dst_tbl}{qw(db tbl)}),
+               $dst_tbl->{duplicate_rows} || 0;
+         }
+      }
+
+      if ( $o->get('verify') ) {
+         die "Did not select all source table rows"
+            if ($stats->{rows_selected} || 0) < $n_source_rows;
+
+         die "Number of inserted and duplicate rows for all dest tables is less than number of source table rows"
+            if ($stats->{rows_inserted} || 0)
+             + ($stats->{duplicate_dest_rows} || 0) < $n_source_rows;
+
+         die "Did not insert all source rows into the --dest table"
+            if ($dst_tbls[-1]->{rows_inserted} || 0)
+             + ($dst_tbls[-1]->{duplicate_rows} || 0) < $n_source_rows;
+         
+         die "Number of START TRANSACTION and COMMIT are not equal"
+            if ($stats->{start_transaction} || 0) != ($stats->{commit} || 0);
+         
+         die "Less chunks than transactions"
+            if ($stats->{chunks} || 0) < ($stats->{commit} || 0);
+
+         print "-- All --verify tests pass\n";
+      }
+
+      if ( $o->get('check-warnings') && lc($o->get('warnings')) ne 'ignore' ) {
+         if (    print_warnings($src->{dbh}, 'Uncaught warning on --source: ')
+              || print_warnings($dst->{dbh}, 'Uncaught warning on --dest: ') ) {
+            die "The warnings above were not caught during the copy process";
+         }
+      }
+   }
+
+
+   return 0;
+}
+
+# ############################################################################
+# Subroutines.
+# ############################################################################
+sub get_cxn {
+   my ( %args ) = @_;
+   my @required_args = qw(dsn DSNParser OptionParser);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dsn, $dp, $o) = @args{@required_args};
+
+   if ( $o->get('ask-pass') ) {
+      $dsn->{p} = OptionParser::prompt_noecho("Enter password: "); 
+   }
+   my $dbh = $dp->get_dbh($dp->get_cxn_params($dsn), {AutoCommit => 0});
+   $dbh->{InactiveDestroy}  = 1;
+   $dbh->{FetchHashKeyName} = 'NAME_lc';
+   return $dbh;
+}
+
+sub print_warnings {
+   my ($dbh, $prefix) = @_;
+   $prefix ||= '';
+   my $n_warnings = 0;
+   my $warnings = $dbh->selectall_arrayref('SHOW WARNINGS');
+   if ($warnings) {
+      foreach my $warning (@$warnings) {
+         print STDERR $prefix, join(' ', @$warning), "\n";
+         $n_warnings++;
+      }
+   }
+   return $n_warnings;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+# ############################################################################
+# Run the program.
+# ############################################################################
+if ( !caller ) { exit main(@ARGV); }
+
+1; # Because this is a module as well as a script.
+
+# ############################################################################
+# Documentation
+# ############################################################################
+=pod
+
+=head1 NAME
+
+mk-insert-normalized - Insert data into normalized tables.
+
+=head1 SYNOPSIS
+
+Usage: insert-normalized [OPTION...] --source DSN --dest DSN
+
+mk-insert-normalized inserts data from a denormalized table into normalized
+tables.  It automatically discovers foreign key references and inserts into
+child tables first.  L<"--source"> and L<"--dest"> DSNs must be specified,
+each with a D (database) and t (table) part.  If the L<"--source"> table does
+not have a C<PRIMARY> key, then you must specify L<"--chunk-index">.
+The L<"--dest"> table is presumed to be a parent table with foreign key
+references to one or more child tables.  Either L<"--print"> or L<"--execute">
+must be specified.
+
+Insert data from C<denorm_tbl> into C<norm_tbl> and its child tables:
+
+  mk-insert-normalized
+    --source    h=localhost,D=test,t=denorm_tbl \
+    --dest      h=hostlocal,D=test,t=norm_tbl   \
+    --databases test                            \
+    --print                                     \
+    --execute
+
+=head1 RISKS
+
+The following section is included to inform users about the potential risks,
+whether known or unknown, of using this tool.  The two main categories of risks
+are those created by the nature of the tool (e.g. read-only tools vs. read-write
+tools) and those created by bugs.
+
+mk-insert-normalized writes to L<"--dest"> tables, but it only reads from
+the L<"--source"> table.
+
+At the time of this release, there are no known bugs that could cause serious
+harm to users.
+
+The authoritative source for updated information is always the online issue
+tracking system.  Issues that affect this tool will be marked as such.  You can
+see a list of such issues at the following URL:
+L<http://www.maatkit.org/bugs/mk-insert-normalized>.
+
+See also L<"BUGS"> for more information on filing bugs and getting help.
+
+=head1 DESCRIPTION
+
+mk-insert-normalized inserts data from a denormalized table into normalized
+tables.  L<"--dest"> specifies the normalized table that is presumed to have
+foreign key constraints that reference other tables.  The tool automatically
+discovers all foreign key references and inserts rows into referenced tables
+first.
+
+Rows from the single, denormalized L<"--source"> table are inserted into
+one or more L<"--dest"> table by matching column names.  For example, if
+the source table is,
+
+   CREATE TABLE denorm_items (
+     id    int NOT NULL AUTO_INCREMENT,
+     type  varchar,
+     color varchar,
+     PRIMARY KEY (id)
+   );
+
+and the normalized destination tables are,
+
+   CREATE TABLE types (
+     type_id int NOT NULL AUTO_INCREMENT,
+     type    varchar,
+     PRIMARY KEY (type_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE colors (
+     color_id int NOT NULL AUTO_INCREMENT,
+     color varchar,
+     PRIMARY KEY (color_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE items (
+     item_id  int NOT NULL AUTO_INCREMENT,
+     type_id  int NOT NULL,
+     color_id int NOT NULL,
+     PRIMARY KEY (item_id),
+     KEY type_id (type_id),
+     KEY color_id (color_id),
+     FOREIGN KEY (type_id) REFERENCES types (type_id),
+     FOREIGN KEY (color_id) REFERENCES colors (color_id)
+   ) ENGINE=InnoDB;
+
+then the resulting inserts will be, in order of tables:
+
+   TABLE   COLUMN    VALUE FROM
+   ======  ========  =====================
+   types   type_id   NULL (auto-increment)
+   types   type      denorm_items.type
+   colors  color_id  NULL (auto-increment)
+   colors  color     denorm_items.color
+   items   item_id   NULL (auto-increment)
+   items   type_id   last types.type_id
+   items   color_id  last colors.color_id
+
+Since table C<items> has foreign key columns that reference tables <types>
+and <colors>, to insert values into C<items> requires selecting the
+corresponding foreign column values in C<types> and C<colors> from the
+last row inserted.  The last row inserted is identified either by a last
+insert ID if the table has an auto-increment column, or by the primary key
+column values.  This becomes complex because MySQL returns a last insert ID
+only if the auto-increment column is inserted with a NULL value, but it's
+possible that the tool could insert manual values for an auto-increment
+column.  Or, if primary key column values are used, the tool has to ensure
+that all of them are selected.  Most sane cases should be handled automatically,
+but if the tool cannot determine how to select the last row inserted for a
+table, it will die with an error like "Cannot get last insert ID for table ...".
+
+=head1 TECHNICAL CONSIDERATIONS
+
+There are a lot of cases concerning table structures, foreign key constraints,
+indexes, column types, etc.  This tool tries to do everything automatically,
+but for best results you should consider these technical points.
+
+=head2 DUPLICATE KEY VALUES
+
+If the denormalized L<"--source"> table has rows which will result in
+duplciate key values when inserted into the normalized L<"--dest"> tables,
+then you may need to use L<"--insert-ignore">.
+
+For example, if the denormalized table has addresses,
+
+   address_id,address,city_id,city,country_id,country
+   1,My Street,1,Montreal,1,Canada
+   2,Your Street,1,Montreal,1,Canada
+
+and the normalized tables are,
+
+   CREATE TABLE address (
+     address_id  smallint unsigned NOT NULL AUTO_INCREMENT,
+     address     varchar NOT NULL,
+     city_id     smallint unsigned NOT NULL,
+     PRIMARY KEY (address_id),
+     KEY idx_fk_city_id (city_id),
+     FOREIGN KEY (city_id) REFERENCES city (city_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE city (
+     city_id     smallint unsigned NOT NULL AUTO_INCREMENT,
+     city        varchar NOT NULL,
+     country_id  smallint unsigned NOT NULL,
+     PRIMARY KEY (city_id),
+     KEY idx_fk_country_id (country_id),
+     FOREIGN KEY (country_id) REFERENCES country (country_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE country (
+     country_id  smallint unsigned NOT NULL AUTO_INCREMENT,
+     country     varchar NOT NULL,
+     PRIMARY KEY (country_id)
+   ) ENGINE=InnoDB;
+
+this will create a duplicate key error when the tool tries to insert row
+C<1,Canada> into table C<country> for the second address.  The same will
+happen for inserting row C<1,Montreal> into table C<city>.
+
+The tool does not check to see if a row already exists; it blindly inserts
+everything.  So currently L<"--insert-ignore">, or possibly L<"--replace">
+if foreign key constraints aren't being used, is the only solution.
+
+=head2 COMPLEX FOREIGN KEY CONSTRAINTS
+
+The tool can resolve rather complex foreign key constraints, but you may
+want to use L<"--print"> to see the INSERT table order, like:
+
+   -- INSERT table order:
+   --   test.data_report
+   --   test.entity
+   --   test.data
+
+The tool will insert values into C<test.data_report>, then C<test.entity>,
+then C<test.data>.
+
+Circular references are resolvable but not supported.
+
+=head2 MULTI-COLUMN FOREIGN KEYS
+
+Multi-column foreign keys like,
+
+   FOREIGN KEY (fk_col1, fk_col2) REFERENCES parent_table (col1, col2)
+
+work but are not formally tested.
+
+=head2 SCHEMA FILTERS
+
+You should probably use the schema filter options L<"--databases"> and
+maybe L<"--tables"> otherwise the tool will try to map columns from the
+L<"--source"> table to any table in any database.  Also, it's more efficient
+to specify only the databases or tables needed.
+
+=head2 TRANSACTION SIZE
+
+The default L<"--txn-size"> is 100 inserts per L<"--dest"> table.  This
+means that if there are 5 L<"--dest"> tables, then each transaction will
+commit 500 rows.  The tool does not delete or alter in any way L<"--source">
+table rows, so the transaction size is more for speed than safety.  If
+copying rows fails, there are no attempts to recover or rollback.  It is
+expect that the user can truncate the L<"--dest"> tables, fix the problem,
+and then try again.
+
+=head1 OPTIONS
+
+Specify at least one of L<"--print"> or L<"--execute">.
+
+DSN values in L<"--dest"> default to values from L<"--source"> if COPY is yes.
+
+L<"--insert-ignore"> and L<"--replace"> are mutually exclusive.
+
+This tool accepts additional command-line arguments.  Refer to the
+L<"SYNOPSIS"> and usage information for details.
+
+=over
+
+=item --ascend-first
+
+Ascend only the first column of a multi-column L<"--chunk-index">.  This is
+more efficient, but if the first column isn't unique, then all rows won't
+be selected or an infinite loop could develop.
+
+=item --ask-pass
+
+Prompt for a password when connecting to MySQL.
+
+=item --charset
+
+short form: -A; type: string
+
+Default character set.  If the value is utf8, sets Perl's binmode on
+STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and runs SET
+NAMES UTF8 after connecting to MySQL.  Any other value sets binmode on STDOUT
+without the utf8 layer, and runs SET NAMES after connecting to MySQL.
+
+=item --[no]auto-increment-gaps
+
+default: yes
+
+Allow gaps in L<"--dest"> table auto increment values if L<"--insert-ignore">.
+If all of the following conditions are true,
+
+  * A L<"--dest"> table has an C<AUTO_INCREMENT> column in the PRIMARY KEY
+  * That auto inc column does not get a value from the L<"--source"> table
+  * L<"--insert-ignore"> is specified
+  * MySQL is v5.1 or newer
+  * MySQL variable C<innodb_autoinc_lock_mode != 0> (by default it does not)
+
+then inserting duplicate rows will cause gaps in auto increment column
+values.  Specifying this option causes the tool to check for the row in
+each L<"--dest"> table before inserting it.  If the row already exists,
+then it is not inserted.
+
+=item --[no]check-warnings
+
+default: yes
+
+C<SHOW WARNINGS> after each C<INSERT> and do L<"--warnings"> if warnings.
+
+=item --chunk-index
+
+type: string; default: PRIMARY
+
+Index to use for chunking the L<"--source"> table.  To avoid excessive memory
+consumption, the L<"--source"> table is chunked by ascending L<"--chunk-index">
+columns and selecting L<"--txn-size"> number of rows each time.  The
+L<"--chunk-index"> can be multi-column.
+
+For example, the default is to use the PRIMARY key.  If that index is specified
+on column C<id> and L<"--txn-size">=100, then the L<"--source"> table will
+be chunked with SELECT statements like,
+
+   SELECT columns
+   FROM   --source FORCE INDEX (--chunk-index)
+   WHERE  ((id > ?))
+   LIMIT  --txn-size
+
+The C<columns> and C<?> values are determined automatically.
+
+=item --column-map
+
+type: string
+
+File with manual L<"--source"> column to L<"--dest"> column mappings.
+By default the tool maps source table columns to destination table columns
+with the same name, or it uses L<"--constant-values">.  You can map source
+to destination columns manually in a file with one line for each mapping
+with this format:
+
+   SOURCE_COLUMN  DEST_COLUMN  OPTIONS
+
+For example:
+
+   foo  db.tbl.bar
+
+That maps column C<foo> in the L<"--source"> table to column C<bar> in table
+C<db.tbl>.  The destination column must specify a database and table and
+cannot be backtick (`) quoted.  Whitespace around and between the values is
+ignored, so neither column name can contain spaces.
+
+C<OPTIONS> can be one or more of the following characters, separated by
+spaces:
+
+=over
+
+=item ! (map once)
+
+Since normally a L<"--source"> columnn can map to many L<"--dest"> columns,
+you can specify a third value after the destination column to prevent the
+specified source column from mapping to anywhere else:
+
+   foo  db.tbl.bar !
+
+The exclamation mark makes L<"--source"> column C<foo> map only once to
+L<"--dest"> column C<bar>.  This is helpful if table C<db.tbl> also has
+a column named C<foo> because without the exclamation mark, C<foo> will
+map manually to C<db.tbl.bar> and then map automatically to C<db.tb.foo>.
+
+=item N (insert group number)
+
+N is an integer >= 1 that specifies an insert group number.  By default,
+all columns for a table are in insert group 1.  Insert groups are used to
+create N inserts into a L<"--dest"> table by inserting the values of grouped
+columns.  For example, if the source table has these columns,
+
+   city_FL    -- city in Florida
+   street_FL  -- street in Florida
+   city_GA    -- city in Georgia
+   street_GA  -- street in Georgia
+
+then a column map with these lines,
+
+   city_FL    db.place.city    1
+   street_FL  db.place.street  1
+   city_GA    db.place.city    2
+   street_GA  db.place.street  2
+
+will cause two inserts into C<db.place>, the first using values from source
+columns C<city_FL> and C<street_FL> and the second using C<city_GA> and
+C<street_GA>.
+
+Insert groups are typically used by a L<"--foreign-key-column-map"> to
+make a L<"--dest"> table table references a row with values from a specific
+insert group.
+
+Certain rules and limitations apply:
+
+=over
+
+=item * N must be >= 1 and sequential; do not skip numbers.
+
+=item * All columns in an insert group must belong to the same table.
+
+=item * You must map all columns for a table with more than 1 insert group, else un-mapped columns will default to insert group 1 and not be inserted with the other insert groups.
+
+=back
+
+=back
+
+=item --config
+
+type: Array
+
+Read this comma-separated list of config files; if specified, this must be the
+first option on the command line.
+
+=item --constant-values
+
+type: string
+
+Read constant column values from this file.  Each line of the file should
+have the form:
+
+  column=value
+
+Leading space before C<column> is ignored, but space before C<=> is not.
+The C<value> is literal, including all leading and trailing space, and does
+not need to be quoted unless quotes are part of the actual value.
+
+If L<"--print"> is specified, then these parsed column-value pairs will be
+printed.
+
+L<"--constant-values"> are mapped after manual L<"--column-map"> values.
+
+=item --databases
+
+type: hash
+
+Search only this comma-separated list of databases for matching L<"--dest"> tables.
+
+=item --defaults-file
+
+short form: -F; type: string
+
+Only read mysql options from the given file.  You must give an absolute
+pathname.
+
+=item --dest
+
+type: DSN
+
+Normalized destination table (required).  The given DSN requires D (database)
+and t (table) parts that specify the normalized table into which rows
+will be copied from the denormalized L<"--source"> table.
+
+This table is presumed to have foreign key constraints that reference other
+tables.  The tool automatically discovers all foreign key references and
+inserts rows into referenced tables first.
+
+=item --execute
+
+Insert data into normalized L<"--dest"> table.  See also L<"--print">.
+
+=item --foreign-key-column-map
+
+type: string
+
+File with L<"--dest"> table foreign key columm to insert group number mappings.
+By default, L<"--dest"> table foreign key columns are referenced to the
+last row inserted into the referenced table.  If no L<"--column-map"> is
+specified or if all columns use default insert group 1, then the last row
+inserted is the only row, but if multiple insert groups are used, then there
+are multiple "last" rows.  A foreign key column map specifies which row
+a foriegn key column should reference by specifying its insert group number.
+
+The foreign key column map file specifies one L<"--dest"> table foriegn
+key column and insert group number per line.  The format is:
+
+   DEST_TABLE_FK_COLUMN  INSERT_GROUP_NUBMER
+
+Using the Florida/Georgia insert group example given for L<"--column-map">,
+if the foreign key column map file specifies,
+
+   db.Florida.place_id  1
+   db.Georgia.palce_id  2
+
+then rows in table C<Florida> will references row in table C<place> with
+values from source table columns C<city_FL> and C<street_FL>, and similarly
+C<Georgia> rows will references C<place> rows with C<city_GA> and C<street_GA>
+values.  Without the foreign key column map, C<Florida> rows would reference
+the last row inserted into C<place> which would be Georgia values.
+
+C<DEST_TABLE_FK_COLUMN> must specify a database, table, and foreign key
+column.  In the above example, the foreign key columns are C<place_id>
+defined like,
+
+   FOREIGN KEY (`place_id`) REFERENCES `place` (`id`)
+
+Multi-column foreign key columns are not supported.
+
+=item --help
+
+Show help and exit.
+
+=item --host
+
+short form: -h; type: string; default: localhost
+
+Connect to host.
+
+=item --ignore-columns
+
+type: Hash
+
+Ignore this comma-separated list of L<"--source"> table columns.  These
+columns will not be mapped to any L<"--dest"> table.  This is useful if
+all tables have a common column like C<id> that you want to let MySQL
+use a default value for (like NULL for an auto-increment column).
+
+=item --ignore-databases
+
+type: Hash
+
+Ignore this comma-separated list of databases.
+
+=item --ignore-engines
+
+type: Hash; default: FEDERATED,MRG_MyISAM
+
+Ignore this comma-separated list of storage engines.
+
+=item --ignore-tables
+
+type: Hash
+
+Ignore this comma-separated list of tables.
+
+Table names may be qualified with the database name.
+
+=item --insert-ignore
+
+INSERT IGNORE into L<"--dest"> tables.  This is useful if the denormalized
+L<"--source"> table has values which are duplicates in the normalized
+L<"--dest"> tables.
+
+=item --password
+
+short form: -p; type: string
+
+Password to use when connecting.
+
+=item --pid
+
+type: string
+
+Create the given PID file when daemonized.  The file contains the process ID of
+the daemonized instance.  The PID file is removed when the daemonized instance
+exits.  The program checks for the existence of the PID file when starting; if
+it exists and the process with the matching PID exists, the program exits.
+
+=item --port
+
+short form: -P; type: int
+
+Port number to use for connection.
+
+=item --print
+
+Print SQL statements and other information.  Specify this option if you want
+to see what the tool is doing internally.  If a line is commented, beginning
+with C<-->, then it is informational, else it is a SQL statement that is
+executed if L<"--execute"> is specified.  If L<"--execute"> is not specified,
+then less information is printed because the tool cannot get required data
+from the server to proceed further.
+
+=item --replace
+
+REPLACE into the L<"--dest"> tables instead of INSERT.
+
+=item --set-vars
+
+type: string; default: wait_timeout=10000
+
+Set these MySQL variables.  Immediately after connecting to MySQL, this string
+will be appended to SET and executed.
+
+=item --socket
+
+short form: -S; type: string
+
+Socket file to use for connection.
+
+=item --source
+
+type: DSN
+
+Denormalized source table (required).  The given DSN requires D (database)
+and t (table) parts that specify the denormalized table from which rows
+will be copied to the normalized L<"--dest"> tables.  The source table must
+have a chunkable index; see L<"--chunk-index">.
+
+=item --statistics
+
+Print statistics about internal counters for L<"--execute">.  This option is
+mostly for development and debugging.
+
+=item --tables
+
+type: hash
+
+Search only this comma-separated list of tables for matching L<"--dest"> tables.
+
+Table names may be qualified with the database name.
+
+=item --txn-size
+
+type: int; default: 100
+
+Number of rows per transaction, per L<"--dest"> table.
+This number is added to the SELECT statement for the L<"--source"> table as a
+LIMIT clause, like C<SELECT  LIMIT --txn-size>.  Then a transaction is started
+before inserting rows into the L<"--dest"> tables.  After all selected rows
+have been inserted into all L<"--dest"> tables, the transaction is committed.
+So the transaction size is for each L<"--dest"> table.
+
+For example, if L<"--txn-size">=100 and there are 3 L<"--dest"> tables (two
+child tables and a parent table), and all columns from the L<"--source">
+table only map to one of the three L<"--dest"> tables, then 100 rows will be
+selected from L<"--source"> and 300 rows will be inserted (100 into each
+L<"--dest"> table) before the transaction is committed.
+
+=item --user
+
+short form: -u; type: string
+
+User for login if not current user.
+
+=item --[no]verify
+
+default: yes
+
+Verify that all source rows were copied after L<"--execute"> finishes.
+This option enables L<"--statistics">.
+
+=item --version
+
+Show version and exit.
+
+=item --warnings
+
+type: string; default: die
+
+Take this action if L<"--[no]check-warnings"> has warnings.  Possible actions
+are: ignore, warn (to STDERR), and die.
+
+=back
+
+=head1 DSN OPTIONS
+
+These DSN options are used to create a DSN.  Each option is given like
+C<option=value>.  The options are case-sensitive, so P and p are not the
+same option.  There cannot be whitespace before or after the C<=> and
+if the value contains whitespace it must be quoted.  DSN options are
+comma-separated.  See the L<maatkit> manpage for full details.
+
+=over
+
+=item * A
+
+dsn: charset; copy: yes
+
+Default character set.
+
+=item * D
+
+dsn: database; copy: yes
+
+Database for denormalized L<"--source"> table or normalized L<"--dest"> table
+
+=item * F
+
+dsn: mysql_read_default_file; copy: yes
+
+Only read default options from the given file
+
+=item * h
+
+dsn: host; copy: yes
+
+Connect to host.
+
+=item * p
+
+dsn: password; copy: yes
+
+Password to use when connecting.
+
+=item * P
+
+dsn: port; copy: yes
+
+Port number to use for connection.
+
+=item * S
+
+dsn: mysql_socket; copy: yes
+
+Socket file to use for connection.
+
+=item * t
+
+Denormalized L<"--source"> table or normalized L<"--dest"> table.
+
+=item * u
+
+dsn: user; copy: yes
+
+User for login if not current user.
+
+=back
+
+=head1 DOWNLOADING
+
+You can download Maatkit from Google Code at
+L<http://code.google.com/p/maatkit/>, or you can get any of the tools
+easily with a command like the following:
+
+   wget http://www.maatkit.org/get/toolname
+   or
+   wget http://www.maatkit.org/trunk/toolname
+
+Where C<toolname> can be replaced with the name (or fragment of a name) of any
+of the Maatkit tools.  Once downloaded, they're ready to run; no installation is
+needed.  The first URL gets the latest released version of the tool, and the
+second gets the latest trunk code from Subversion.
+
+=head1 ENVIRONMENT
+
+The environment variable C<MKDEBUG> enables verbose debugging output in all of
+the Maatkit tools:
+
+   MKDEBUG=1 mk-....
+
+=head1 SYSTEM REQUIREMENTS
+
+You need Perl, DBI, DBD::mysql, and some core packages that ought to be
+installed in any reasonably new version of Perl.
+
+=head1 BUGS
+
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-insert-normalized>.
+
+Please use Google Code Issues and Groups to report bugs or request support:
+L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
+discuss Maatkit.
+
+Please include the complete command-line used to reproduce the problem you are
+seeing, the version of all MySQL servers involved, the complete output of the
+tool when run with L<"--version">, and if possible, debugging output produced by
+running with the C<MKDEBUG=1> environment variable.
+
+=head1 COPYRIGHT, LICENSE AND WARRANTY
+
+This program is copyright 2011-@CURRENTYEAR@ Percona Inc.
+Feedback and improvements are welcome.
+
+THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
+WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+This program is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 2; OR the Perl Artistic License.  On UNIX and similar
+systems, you can issue `man perlgpl' or `man perlartistic' to read these
+licenses.
+
+You should have received a copy of the GNU General Public License along with
+this program; if not, write to the Free Software Foundation, Inc., 59 Temple
+Place, Suite 330, Boston, MA  02111-1307  USA.
+
+=head1 AUTHOR
+
+Daniel Nichter
+
+=head1 ABOUT MAATKIT
+
+This tool is part of Maatkit, a toolkit for power users of MySQL.  Maatkit
+was created by Baron Schwartz; Baron and Daniel Nichter are the primary
+code contributors.  Both are employed by Percona.  Financial support for
+Maatkit development is primarily provided by Percona and its clients. 
+
+=head1 VERSION
+
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7625 $.
+
+=cut

@@ -50,12 +50,12 @@ $sb->load_file("master", "common/t/samples/osc/tbl001.sql");
 $dbh->do("USE osc");
 
 $osc->copy(
-   dbh       => $dbh,
-   old_table => 'osc.t',
-   new_table => 'osc.__new_t',
-   columns   => [qw(id c)],
-   chunks    => ['1=1'],
-   msg       => $msg,
+   dbh        => $dbh,
+   from_table => 'osc.t',
+   to_table   => 'osc.__new_t',
+   columns    => [qw(id c)],
+   chunks     => ['1=1'],
+   msg        => $msg,
 );
 
 my $rows = $dbh->selectall_arrayref("select id, c from __new_t order by id");
@@ -70,8 +70,8 @@ $dbh->do("truncate table osc.__new_t");
 $output = output( sub {
    $osc->copy(
       dbh          => $dbh,
-      old_table    => 'osc.t',
-      new_table    => 'osc.__new_t',
+      from_table   => 'osc.t',
+      to_table     => 'osc.__new_t',
       columns      => [qw(id c)],
       chunks       => ['id < 4', 'id >= 4 AND id < 6'],
       msg          => $msg,
@@ -118,8 +118,8 @@ my $pr = new Progress(
 $output = output(
    sub { $osc->copy(
       dbh        => $dbh,
-      old_table  => 'sakila.city',
-      new_table  => 'osc.city',
+      from_table => 'sakila.city',
+      to_table   => 'osc.city',
       columns    => [qw(city_id city country_id last_update)],
       chunks     => $chunks,
       msg        => $msg,
@@ -146,13 +146,13 @@ my $sleep_cnt = 0;
 $dbh->do("truncate table osc.__new_t");
 output( sub {
    $osc->copy(
-      dbh       => $dbh,
-      old_table => 'osc.t',
-      new_table => 'osc.__new_t',
-      columns   => [qw(id c)],
-      chunks    => ['id < 4', 'id >= 4 AND id < 6'],
-      msg       => $msg,
-      sleep     => sub { $sleep_cnt++; },
+      dbh        => $dbh,
+      from_table => 'osc.t',
+      to_table   => 'osc.__new_t',
+      columns    => [qw(id c)],
+      chunks     => ['id < 4', 'id >= 4 AND id < 6'],
+      msg        => $msg,
+      sleep      => sub { $sleep_cnt++; },
    );
 });
 is(

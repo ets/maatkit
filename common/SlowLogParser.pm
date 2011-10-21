@@ -1,4 +1,4 @@
-# This program is copyright 2007-2010 Baron Schwartz.
+# This program is copyright 2007-2011 Baron Schwartz.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# SlowLogParser package $Revision$
+# SlowLogParser package $Revision: 7522 $
 # ###########################################################################
 package SlowLogParser;
 
@@ -272,6 +272,10 @@ sub parse_event {
       # it's been cast into a hash, duplicated keys will be gone.
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 

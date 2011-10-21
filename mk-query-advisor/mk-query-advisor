@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -22,7 +22,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7531 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # DSNParser package 7388
@@ -1481,7 +1481,7 @@ sub join_quote {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -1651,6 +1651,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -1674,7 +1678,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# GeneralLogParser package 7096
+# GeneralLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/GeneralLogParser.pm
@@ -1808,6 +1812,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 
@@ -1831,7 +1839,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -1877,7 +1885,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -2235,7 +2243,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -3265,7 +3273,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryAdvisorRules package 7405
+# QueryAdvisorRules package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryAdvisorRules.pm
@@ -3317,7 +3325,7 @@ sub get_rules {
          my $cols  = $event->{query_struct}->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{tbl} && $col->{name} eq '*' &&  $col->{alias};
+            return 0 if $col->{tbl} && $col->{col} eq '*' &&  $col->{alias};
          }
          return;
       },
@@ -3331,12 +3339,12 @@ sub get_rules {
          my $tbls   = $struct->{from} || $struct->{into} || $struct->{tables};
          return unless $tbls;
          foreach my $tbl ( @$tbls ) {
-            return 0 if $tbl->{alias} && $tbl->{alias} eq $tbl->{name};
+            return 0 if $tbl->{alias} && $tbl->{alias} eq $tbl->{tbl};
          }
          my $cols = $struct->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{alias} && $col->{alias} eq $col->{name};
+            return 0 if $col->{alias} && $col->{alias} eq $col->{col};
          }
          return;
       },
@@ -3351,7 +3359,7 @@ sub get_rules {
          foreach my $arg ( @$where ) {
             return 0
                if ($arg->{operator} || '') eq 'like'
-                  && $arg->{value} =~ m/[\'\"][\%\_]./;
+                  && $arg->{right_arg} =~ m/[\'\"][\%\_]./;
          }
          return;
       },
@@ -3366,7 +3374,7 @@ sub get_rules {
          foreach my $arg ( @$where ) {
             return 0
                if ($arg->{operator} || '') eq 'like'
-                  && $arg->{value} !~ m/[%_]/;
+                  && $arg->{right_arg} !~ m/[%_]/;
          }
          return;
       },
@@ -3431,9 +3439,9 @@ sub get_rules {
                            grep { $_->{column} }
                            @$orderby;
          foreach my $pred ( @$where ) {
-            my $val = $pred->{value};
+            my $val = $pred->{right_arg};
             next unless $val;
-            return 0 if $val =~ m/^\d+$/ && $orderby_col{lc $pred->{column}};
+            return 0 if $val =~ m/^\d+$/ && $orderby_col{lc $pred->{left_arg}};
          }
          return;
       },
@@ -3492,7 +3500,7 @@ sub get_rules {
          my $cols = $event->{query_struct}->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{name} eq '*';
+            return 0 if $col->{col} eq '*';
          }
          return;
       },
@@ -3580,7 +3588,7 @@ sub get_rules {
          return unless scalar %groupby_col;
          my $cols = $event->{query_struct}->{columns};
          foreach my $col ( @$cols ) {
-            return 0 unless $groupby_col{ $col->{name} };
+            return 0 unless $groupby_col{ $col->{col} };
          }
          return;
       },
@@ -3632,7 +3640,7 @@ sub get_rules {
 
          for my $i ( 0..($n_tbls-1) ) {
             my $tbl      = $tbls->[$i];
-            my $tbl_name = lc $tbl->{name};
+            my $tbl_name = lc $tbl->{tbl};
 
             $tbl_cnt{$tbl_name}->{cnt}++;
             $tbl_cnt{$tbl_name}->{ansi_join}++
@@ -3661,17 +3669,18 @@ sub get_rules {
          my $where  = $struct->{where};
          return unless $where;
 
-         my %outer_tbls = map { $_->{name} => 1 } get_outer_tables($tbls);
+         my %outer_tbls = map { $_->{tbl} => 1 } get_outer_tables($tbls);
          MKDEBUG && _d("Outer tables:", keys %outer_tbls);
          return unless %outer_tbls;
 
          foreach my $pred ( @$where ) {
-            next unless $pred->{column};  # skip constants like 1 in "WHERE 1"
-            my ($tbl, $col) = split /\./, $pred->{column};
+            next unless $pred->{left_arg};  # skip constants like 1 in "WHERE 1"
+            my ($tbl, $col) = split /\./, $pred->{left_arg};
             if ( $tbl && $col && $outer_tbls{$tbl} ) {
-               if ( $pred->{operator} ne 'is' || $pred->{value} !~ m/null/i ) {
+               if ($pred->{operator} ne 'is' || $pred->{right_arg} !~ m/null/i)
+               {
                   MKDEBUG && _d("Predicate prevents OUTER JOIN:",
-                     map { $pred->{$_} } qw(column operator value));
+                     map { $pred->{$_} } qw(left_arg operator right_arg));
                   return 0;
                }
             }
@@ -3696,16 +3705,16 @@ sub get_rules {
          my %outer_tbl_join_cols;
          my @unknown_join_cols;
          foreach my $outer_tbl ( get_outer_tables($tbls) ) {
-            $outer_tbls{$outer_tbl->{name}} = 1;
+            $outer_tbls{$outer_tbl->{tbl}} = 1;
 
             my $join = $outer_tbl->{join};
             if ( !$join ) {
                my ($inner_tbl) = grep { 
                   exists $_->{join} 
-                  && $_->{join}->{to} eq $outer_tbl->{name}
+                  && $_->{join}->{to} eq $outer_tbl->{tbl}
                } @$tbls;
                $join = $inner_tbl->{join}; 
-               die "Cannot find join structure for $outer_tbl->{name}"
+               die "Cannot find join structure for $outer_tbl->{tbl}"
                   unless $join;
             }
 
@@ -3719,7 +3728,7 @@ sub get_rules {
                my @join_cols;
                foreach my $pred ( @$where ) {
                   next unless $pred->{operator} eq '=';
-                  push @join_cols, $pred->{column}, $pred->{value};
+                  push @join_cols, $pred->{left_arg}, $pred->{right_arg};
                }
                MKDEBUG && _d("Join columns:", @join_cols);
                foreach my $join_col ( @join_cols ) {
@@ -3738,7 +3747,7 @@ sub get_rules {
                   }
                   else {
                      $outer_tbl_join_cols{$col} = 1
-                        if $tbl eq $outer_tbl->{name};
+                        if $tbl eq $outer_tbl->{tbl};
                   }
                }
             }
@@ -3747,10 +3756,11 @@ sub get_rules {
          MKDEBUG && _d("Unknown join columns:", @unknown_join_cols);
 
          foreach my $pred ( @$where ) {
-            next unless $pred->{column};  # skip constants like 1 in "WHERE 1"
-            next unless $pred->{operator} eq 'is' && $pred->{value} =~ m/NULL/i;
+            next unless $pred->{left_arg}; # skip constants like 1 in "WHERE 1"
+            next unless $pred->{operator} eq 'is'
+               && $pred->{right_arg} =~ m/NULL/i;
 
-            my ($tbl, $col) = split /\./, $pred->{column};
+            my ($tbl, $col) = split /\./, $pred->{left_arg};
             if ( !$col ) {
                $col = $tbl;
                $tbl = determine_table_for_column(
@@ -4021,7 +4031,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7405
+# SQLParser package 7497
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -4068,6 +4078,7 @@ my $column_ident = qr/(?:
 sub new {
    my ( $class, %args ) = @_;
    my $self = {
+      %args,
    };
    return bless $self, $class;
 }
@@ -4351,7 +4362,7 @@ sub parse_from {
          else { # USING
             $join_condition_value =~ s/^\s*\(//;
             $join_condition_value =~ s/\)\s*$//;
-            $join->{columns} = $self->parse_csv($join_condition_value);
+            $join->{columns} = $self->_parse_csv($join_condition_value);
          }
       }
       elsif ( $thing =~ m/(?:,|JOIN)/i ) {
@@ -4364,7 +4375,7 @@ sub parse_from {
          $tbl_ref = undef;
          $join    = {};
 
-         $join->{to} = $tbls[-1]->{name};
+         $join->{to} = $tbls[-1]->{tbl};
          if ( $thing eq ',' ) {
             $join->{type} = 'inner';
             $join->{ansi} = 0;
@@ -4434,22 +4445,31 @@ sub parse_where {
    return unless $where;
    MKDEBUG && _d("Parsing WHERE", $where);
 
-   my $op = qr/
-      (?:\b|\s)
+   my $op_symbol = qr/
       (?:
-          <=
-         |>=
-         |<>
-         |!=
-         |<
-         |>
-         |=
-         |(?:NOT\s)?LIKE
-         |IS(?:\sNOT\s)?
-         |(?:\sNOT\s)?BETWEEN
-         |(?:NOT\s)?IN
+       <=
+      |>=
+      |<>
+      |!=
+      |<
+      |>
+      |=
+   )/xi;
+   my $op_verb = qr/
+      (?:
+          (?:(?:NOT\s)?LIKE)
+         |(?:IS(?:\sNOT\s)?)
+         |(?:(?:\sNOT\s)?BETWEEN)
+         |(?:(?:NOT\s)?IN)
       )
    /xi;
+   my $op_pat = qr/
+   (
+      (?>
+          (?:$op_symbol)  # don't need spaces around the symbols, e.g.: col=1
+         |(?:\s+$op_verb) # must have space before verb op, e.g.: col LIKE ...
+      )
+   )/x;
 
    my $offset = 0;
    my $pred   = "";
@@ -4460,13 +4480,13 @@ sub parse_where {
 
       $pred = substr $where, $offset, ($pos-$offset);
       push @pred, $pred;
-      push @has_op, $pred =~ m/$op/io ? 1 : 0;
+      push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
 
       $offset = $pos;
    }
    $pred = substr $where, $offset;
    push @pred, $pred;
-   push @has_op, $pred =~ m/$op/io ? 1 : 0;
+   push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
    MKDEBUG && _d("Predicate fragments:", Dumper(\@pred));
    MKDEBUG && _d("Predicate frags with operators:", @has_op);
 
@@ -4505,19 +4525,19 @@ sub parse_where {
       if ( $pred =~ s/^(and|or)\s+//i ) {
          $conj = lc $1;
       }
-      my ($col, $op, $val) = $pred =~ m/^(.+?)($op)(.*)/; 
+      my ($col, $op, $val) = $pred =~ m/^(.+?)$op_pat(.+)$/o;
       if ( !$col || !$op ) {
          if ( $self->_is_constant($pred) ) {
             $val = lc $pred;
          }
          else {
-            die "Failed to parse predicate: $pred";
+            die "Failed to parse WHERE condition: $pred";
          }
       }
 
       if ( $col ) {
          $col =~ s/\s+$//;
-         $col =~ s/^\(//;  # no unquoted column name begins with (
+         $col =~ s/^\(+//;  # no unquoted column name begins with (
       }
       if ( $op ) {
          $op  =  lc $op;
@@ -4525,14 +4545,20 @@ sub parse_where {
          $op  =~ s/\s+$//;
       }
       $val =~ s/^\s+//;
-      $val =~ s/\)$// if ($op || '') !~ m/in/i && $val !~ m/^\w+\([^\)]+\)$/;
-      $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
+      
+      if ( ($op || '') !~ m/IN/i && $val !~ m/^\w+\([^\)]+\)$/ ) {
+         $val =~ s/\)+$//;
+      }
+
+      if ( $val =~ m/NULL|TRUE|FALSE/i ) {
+         $val = lc $val;
+      }
 
       push @predicates, {
-         column    => $col,
-         operator  => $op,
-         value     => $val,
          predicate => $conj,
+         left_arg  => $col,
+         operator  => $op,
+         right_arg => $val,
       };
    }
 
@@ -4559,7 +4585,7 @@ sub parse_group_by {
 
    my $with_rollup = $group_by =~ s/\s+WITH ROLLUP\s*//i;
 
-   my $idents = $self->parse_identifiers( $self->parse_csv($group_by) );
+   my $idents = $self->parse_identifiers( $self->_parse_csv($group_by) );
 
    $idents->{with_rollup} = 1 if $with_rollup;
 
@@ -4570,7 +4596,7 @@ sub parse_order_by {
    my ( $self, $order_by ) = @_;
    return unless $order_by;
    MKDEBUG && _d('Parsing ORDER BY', $order_by);
-   my $idents = $self->parse_identifiers( $self->parse_csv($order_by) );
+   my $idents = $self->parse_identifiers( $self->_parse_csv($order_by) );
    return $idents;
 }
 
@@ -4596,50 +4622,97 @@ sub parse_limit {
 sub parse_values {
    my ( $self, $values ) = @_;
    return unless $values;
-   my @vals = ($values =~ m/\([^\)]+\)/g);
-   return \@vals;
+   $values =~ s/^\s*\(//;
+   $values =~ s/\s*\)//;
+   my $vals = $self->_parse_csv(
+      $values,
+      quoted_values => 1,
+      remove_quotes => 0,
+   );
+   return $vals;
 }
 
 sub parse_set {
    my ( $self, $set ) = @_;
    MKDEBUG && _d("Parse SET", $set);
    return unless $set;
-   my $vals = $self->parse_csv($set);
+   my $vals = $self->_parse_csv($set);
    return unless $vals && @$vals;
 
    my @set;
    foreach my $col_val ( @$vals ) {
-      my ($tbl_col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
-
-      my ($c) = $val =~ m/^(['"])/;
-      if ( $c ) {
-         $val =~ s/^$c//;
-         $val =~ s/$c$//;
-      }
-
-      my ($col, $tbl, $db) = reverse split(/\./, $tbl_col);
-
-      my $set_struct = {
-         column => $col,
-         value  => $val,
+      my ($col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
+      my $ident_struct = $self->parse_identifier('column', $col);
+      my $set_struct   = {
+         %$ident_struct,
+         value => $val,
       };
-      $set_struct->{tbl} = $tbl if $tbl;
-      $set_struct->{db}  = $db  if $db;
       MKDEBUG && _d("SET:", Dumper($set_struct));
       push @set, $set_struct;
    }
    return \@set;
 }
 
-sub parse_csv {
-   my ( $self, $vals ) = @_;
+sub _parse_csv {
+   my ( $self, $vals, %args ) = @_;
    return unless $vals;
-   my @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+
+   my @vals;
+   if ( $args{quoted_values} ) {
+      my $quote_char   = '';
+      VAL:
+      foreach my $val ( split(',', $vals) ) {
+         MKDEBUG && _d("Next value:", $val);
+         if ( $quote_char ) {
+            MKDEBUG && _d("Value is part of previous quoted value");
+            $vals[-1] .= ",$val";
+
+            if ( $val =~ m/[^\\]*$quote_char$/ ) {
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+               MKDEBUG && _d("Previous quoted value is complete:", $vals[-1]);
+               $quote_char = '';
+            }
+
+            next VAL;
+         }
+
+         $val =~ s/^\s+//;
+
+         if ( $val =~ m/^(['"])/ ) {
+            MKDEBUG && _d("Value is quoted");
+            $quote_char = $1;  # XXX
+            if ( $val =~ m/.$quote_char$/ ) {
+               MKDEBUG && _d("Value is complete");
+               $quote_char = '';
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+            }
+            else {
+               MKDEBUG && _d("Quoted value is not complete");
+            }
+         }
+         else {
+            $val =~ s/\s+$//;
+         }
+
+         MKDEBUG && _d("Saving value", ($quote_char ? "fragment" : ""));
+         push @vals, $val;
+      }
+   }
+   else {
+      @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+   }
+
    return \@vals;
 }
 {
    no warnings;  # Why? See same line above.
-   *parse_on_duplicate = \&parse_csv;
+   *parse_on_duplicate = \&_parse_csv;
 }
 
 sub parse_columns {
@@ -4792,19 +4865,36 @@ sub parse_identifier {
    my %ident_struct;
    my @ident_parts = map { s/`//g; $_; } split /[.]/, $ident;
    if ( @ident_parts == 3 ) {
-      @ident_struct{qw(db tbl name)} = @ident_parts;
+      @ident_struct{qw(db tbl col)} = @ident_parts;
    }
    elsif ( @ident_parts == 2 ) {
-      my @parts_for_type = $type eq 'column' ? qw(tbl name)
-                         : $type eq 'table'  ? qw(db  name)
+      my @parts_for_type = $type eq 'column' ? qw(tbl col)
+                         : $type eq 'table'  ? qw(db  tbl)
                          : die "Invalid identifier type: $type";
       @ident_struct{@parts_for_type} = @ident_parts;
    }
    elsif ( @ident_parts == 1 ) {
-      @ident_struct{qw(name)} = @ident_parts;
+      my $part = $type eq 'column' ? 'col' : 'tbl';
+      @ident_struct{($part)} = @ident_parts;
    }
    else {
       die "Invalid number of parts in $type reference: $ident";
+   }
+   
+   if ( $self->{SchemaQualifier} ) {
+      if ( $type eq 'column' && !$ident_struct{tbl} ) {
+         my $qcol = $self->{SchemaQualifier}->qualify_column(
+            column => $ident_struct{col},
+         );
+         $ident_struct{db}  = $qcol->{db}  if $qcol->{db};
+         $ident_struct{tbl} = $qcol->{tbl} if $qcol->{tbl};
+      }
+      elsif ( $type eq 'table' && !$ident_struct{db} ) {
+         my $db = $self->{SchemaQualifier}->get_database_for_table(
+            table => $ident_struct{tbl},
+         );
+         $ident_struct{db} = $db if $db;
+      }
    }
 
    MKDEBUG && _d($type, "identifier struct:", Dumper(\%ident_struct));
@@ -4820,6 +4910,31 @@ sub split_unquote {
       $db  = $default_db;
    }
    return ($db, $tbl);
+}
+
+sub is_identifier {
+   my ( $self, $thing ) = @_;
+
+   return 0 unless $thing;
+
+   return 0 if $thing =~ m/\s*['"]/;
+
+   return 0 if $thing =~ m/^\s*\d+(?:\.\d+)?\s*$/;
+
+   return 0 if $thing =~ m/^\s*(?>
+       NULL
+      |DUAL
+   )\s*$/xi;
+
+   return 1 if $thing =~ m/^\s*$column_ident\s*$/;
+
+   return 0;
+}
+
+sub set_SchemaQualifier {
+   my ( $self, $sq ) = @_;
+   $self->{SchemaQualifier} = $sq;
+   return;
 }
 
 sub _d {
@@ -5539,7 +5654,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ReportFormatter package 7359
+# ReportFormatter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ReportFormatter.pm
@@ -6166,7 +6281,7 @@ sub main {
             }
 
             foreach my $tbl_info ( @$tbls ) {
-               my $tbl = $tbl_info->{name};
+               my $tbl = $tbl_info->{tbl};
                my $db  = $tbl_info->{db} || $event->{db} || $default_db;
                if ( !$db ) {
                   MKDEBUG && _d("No database for table", $tbl);
@@ -7117,7 +7232,7 @@ You need the following Perl modules: DBI and DBD::mysql.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-query-advisor>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-query-advisor>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -7135,7 +7250,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -7160,6 +7275,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7531 $.
 
 =cut

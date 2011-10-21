@@ -7,7 +7,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -24,7 +24,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7460 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # DSNParser package 7388
@@ -5236,7 +5236,7 @@ The CHUNK column signifies what kind of information is in the line:
          table.
 
 The types of lines you'll see depend on the L<"--chunk-size"> option and
-L<"--verbose"> options.  mk-parallel-dump treats evrything as a chunk.  If you
+L<"--verbose"> options.  mk-parallel-dump treats everything as a chunk.  If you
 don't specify L<"--chunk-size">, then each table is one big chunk and each
 database is a chunk (of all its tables).  Thus, there is output for numbered
 table chunks (L<"--chunk-size">), table chunks, and database chunks.
@@ -5294,7 +5294,7 @@ If you specify L<"--verbose"> once, then the output includes "tbl" CHUNKS:
     all  0.28     0        0 -
 
 And if you specify L<"--verbose"> twice in conjunction with L<"--chunk-size">,
-then the ouput includes the chunks:
+then the output includes the chunks:
 
   CHUNK  TIME  EXIT  SKIPPED DATABASE.TABLE       
       0  0.03     0        0 sakila.payment       
@@ -5865,7 +5865,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -5894,6 +5894,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7460 $.
 
 =cut

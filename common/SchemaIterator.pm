@@ -1,4 +1,4 @@
-# This program is copyright 2009-2010 Percona Inc.
+# This program is copyright 2009-2011 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -15,370 +15,472 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# SchemaIterator package $Revision$
+# SchemaIterator package $Revision: 7547 $
 # ###########################################################################
 package SchemaIterator;
 
+{ # package scope
 use strict;
 use warnings FATAL => 'all';
-
 use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
 $Data::Dumper::Quotekeys = 0;
 
-use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+my $open_comment = qr{/\*!\d{5} };
+my $tbl_name     = qr{
+   CREATE\s+
+   (?:TEMPORARY\s+)?
+   TABLE\s+
+   (?:IF NOT EXISTS\s+)?
+   ([^\(]+)
+}x;
 
+
+# Sub: new
+#   Create a new SchemaIterator object with either a dbh or a file_itr.
+#
+# Parameters:
+#   %args - Arguments
+#
+# Required Arguments:
+#   dbh          - dbh to iterate.  Mutually exclusive with file_itr.
+#   file_itr     - <FileIterator::get_file_itr()> iterator for dump file.
+#                  Mutually exclusive with dbh.
+#   OptionParser - <OptionParser> object.  All filters are gotten from this
+#                  obj: --databases, --tables, etc.
+#   Quoter       - <Quoter> object.
+#
+# Optional Arguments:
+#   Schema      - <Schema> object to initialize while iterating.
+#   MySQLDump   - <MySQLDump> object to get CREATE TABLE when iterating dbh.
+#   TableParser - <TableParser> object to parse CREATE TABLE for tbl_struct.
+#   keep_ddl    - Keep CREATE TABLE (default false)
+#
+# Returns:
+#   SchemaIterator object
 sub new {
    my ( $class, %args ) = @_;
-   foreach my $arg ( qw(Quoter) ) {
+   my @required_args = qw(OptionParser Quoter);
+   foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
+
+   # Either a dbh or a file_itr is required, but not both.
+   my ($file_itr, $dbh) = @args{qw(file_itr dbh)};
+   die "I need either a dbh or file_itr argument"
+      if (!$dbh && !$file_itr) || ($dbh && $file_itr);
+
    my $self = {
       %args,
-      filter => undef,
-      dbs    => [],
+      filters => _make_filters(%args),
    };
+
    return bless $self, $class;
 }
 
-# Required args:
-#   * o  obj: OptionParser module
-# Returns: subref
-# Can die: yes
-# make_filter() uses an OptionParser obj and the following standard filter
-# options to make a filter sub suitable for set_filter():
-#   --databases -d            List of allowed databases
-#   --ignore-databases        List of databases to ignore
-#   --databases-regex         List of allowed databases that match pattern
-#   --ignore-databases-regex  List of ignored database that match pattern
-#   --tables    -t            List of allowed tables
-#   --ignore-tables           List of tables to ignore
-#   --tables-regex            List of allowed tables that match pattern
-#   --ignore-tables-regex     List of ignored tables that match pattern
-#   --engines   -e            List of allowed engines
-#   --ignore-engines          List of engines to ignore 
-# The filters in the sub are created in that order for efficiency.  For
-# example, the table filters are not checked if the database doesn't first
-# pass its filters.  Each filter is only created if specified.  Since the
-# database and tables are given separately we no longer have to worry about
-# splitting db.tbl to match db and/or tbl.  The filter returns true if the
-# schema object is allowed.
-sub make_filter {
-   my ( $self, $o ) = @_;
-   my @lines = (
-      'sub {',
-      '   my ( $dbh, $db, $tbl ) = @_;',
-      '   my $engine = undef;',
-   );
-
-   # Filter schema objs in this order: db, tbl, engine.  It's not efficient
-   # to check the table if, for example, the database isn't allowed.
-
-   my @permit_dbs = _make_filter('unless', '$db', $o->get('databases'))
-      if $o->has('databases');
-   my @reject_dbs = _make_filter('if', '$db', $o->get('ignore-databases'))
-      if $o->has('ignore-databases');
-   my @dbs_regex;
-   if ( $o->has('databases-regex') && (my $p = $o->get('databases-regex')) ) {
-      push @dbs_regex, "      return 0 unless \$db && (\$db =~ m/$p/o);";
-   }
-   my @reject_dbs_regex;
-   if ( $o->has('ignore-databases-regex')
-        && (my $p = $o->get('ignore-databases-regex')) ) {
-      push @reject_dbs_regex, "      return 0 if \$db && (\$db =~ m/$p/o);";
-   }
-   if ( @permit_dbs || @reject_dbs || @dbs_regex || @reject_dbs_regex ) {
-      push @lines,
-         '   if ( $db ) {',
-            (@permit_dbs        ? @permit_dbs       : ()),
-            (@reject_dbs        ? @reject_dbs       : ()),
-            (@dbs_regex         ? @dbs_regex        : ()),
-            (@reject_dbs_regex  ? @reject_dbs_regex : ()),
-         '   }';
-   }
-
-   if ( $o->has('tables') || $o->has('ignore-tables')
-        || $o->has('ignore-tables-regex') ) {
-
-      # Have created the "my $qtbls = ..." line for db-qualified tbls.
-      # http://code.google.com/p/maatkit/issues/detail?id=806
-      my $have_qtbl       = 0;
-      my $have_only_qtbls = 0;
-      my %qtbls;
-
-      my @permit_tbls;
-      my @permit_qtbls;
-      my %permit_qtbls;
-      if ( $o->get('tables') ) {
-         my %tbls;
-         map {
-            if ( $_ =~ m/\./ ) {
-               # Table is db-qualified (db.tbl).
-               $permit_qtbls{$_} = 1;
-            }
-            else {
-               $tbls{$_} = 1;
-            }
-         } keys %{ $o->get('tables') };
-         @permit_tbls  = _make_filter('unless', '$tbl', \%tbls);
-         @permit_qtbls = _make_filter('unless', '$qtbl', \%permit_qtbls);
-
-         if ( @permit_qtbls ) {
-            push @lines,
-               '   my $qtbl   = ($db ? "$db." : "") . ($tbl ? $tbl : "");';
-            $have_qtbl = 1;
-         }
-      }
-
-      my @reject_tbls;
-      my @reject_qtbls;
-      my %reject_qtbls;
-      if ( $o->get('ignore-tables') ) {
-         my %tbls;
-         map {
-            if ( $_ =~ m/\./ ) {
-               # Table is db-qualified (db.tbl).
-               $reject_qtbls{$_} = 1;
-            }
-            else {
-               $tbls{$_} = 1;
-            }
-         } keys %{ $o->get('ignore-tables') };
-         @reject_tbls= _make_filter('if', '$tbl', \%tbls);
-         @reject_qtbls = _make_filter('if', '$qtbl', \%reject_qtbls);
-
-         if ( @reject_qtbls && !$have_qtbl ) {
-            push @lines,
-               '   my $qtbl   = ($db ? "$db." : "") . ($tbl ? $tbl : "");';
-         }
-      }
-
-      # If all -t are db-qualified but there are no explicit -d, then
-      # we add all unique dbs from the -t to -d and recurse.  This
-      # prevents wasted effort looking at db that are implicitly filtered
-      # by the db-qualified -t.
-      if ( keys %permit_qtbls  && !@permit_dbs ) {
-         my $dbs = {};
-         map {
-            my ($db, undef) = split(/\./, $_);
-            $dbs->{$db} = 1;
-         } keys %permit_qtbls;
-         MKDEBUG && _d('Adding restriction "--databases',
-               (join(',', keys %$dbs) . '"'));
-         if ( keys %$dbs ) {
-            # Only recurse if extracting the dbs worked. Else, the
-            # following code will still work and we just lose this
-            # optimization.
-            $o->set('databases', $dbs);
-            return $self->make_filter($o);
-         }
-      }
-
-      my @tbls_regex;
-      if ( $o->has('tables-regex') && (my $p = $o->get('tables-regex')) ) {
-         push @tbls_regex, "      return 0 unless \$tbl && (\$tbl =~ m/$p/o);";
-      }
-      my @reject_tbls_regex;
-      if ( $o->has('ignore-tables-regex')
-           && (my $p = $o->get('ignore-tables-regex')) ) {
-         push @reject_tbls_regex,
-            "      return 0 if \$tbl && (\$tbl =~ m/$p/o);";
-      }
-
-      my @get_eng;
-      my @permit_engs;
-      my @reject_engs;
-      if ( ($o->has('engines') && $o->get('engines'))
-           || ($o->has('ignore-engines') && $o->get('ignore-engines')) ) {
-         push @get_eng,
-            '      my $sql = "SHOW TABLE STATUS "',
-            '              . ($db ? "FROM `$db`" : "")',
-            '              . " LIKE \'$tbl\'";',
-            '      MKDEBUG && _d($sql);',
-            '      eval {',
-            '         $engine = $dbh->selectrow_hashref($sql)->{engine};',
-            '      };',
-            '      MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);',
-            '      MKDEBUG && _d($tbl, "uses engine", $engine);',
-            '      $engine = lc $engine if $engine;',
-         @permit_engs
-            = _make_filter('unless', '$engine', $o->get('engines'), 1);
-         @reject_engs
-            = _make_filter('if', '$engine', $o->get('ignore-engines'), 1)
-      }
-
-      if ( @permit_tbls || @permit_qtbls || @reject_tbls || @tbls_regex
-           || @reject_tbls_regex || @permit_engs || @reject_engs ) {
-         push @lines,
-            '   if ( $tbl ) {',
-               (@permit_tbls       ? @permit_tbls        : ()),
-               (@reject_tbls       ? @reject_tbls        : ()),
-               (@tbls_regex        ? @tbls_regex         : ()),
-               (@reject_tbls_regex ? @reject_tbls_regex  : ()),
-               (@permit_qtbls      ? @permit_qtbls       : ()),
-               (@reject_qtbls      ? @reject_qtbls       : ()),
-               (@get_eng           ? @get_eng            : ()),
-               (@permit_engs       ? @permit_engs        : ()),
-               (@reject_engs       ? @reject_engs        : ()),
-            '   }';
-      }
-   }
-
-   push @lines,
-      '   MKDEBUG && _d(\'Passes filters:\', $db, $tbl, $engine, $dbh);',
-      '   return 1;',  '}';
-
-   # Make the subroutine.
-   my $code = join("\n", @lines);
-   MKDEBUG && _d('filter sub:', $code);
-   my $filter_sub= eval $code
-      or die "Error compiling subroutine code:\n$code\n$EVAL_ERROR";
-
-   return $filter_sub;
-}
-
-# Required args:
-#   * filter_sub  subref: Filter sub, usually from make_filter()
-# Returns: undef
-# Can die: no
-# set_filter() sets the filter sub that get_db_itr() and get_tbl_itr()
-# use to filter the schema objects they find.  If no filter sub is set
-# then every possible schema object is returned by the iterators.  The
-# filter should return true if the schema object is allowed.
-sub set_filter {
-   my ( $self, $filter_sub ) = @_;
-   $self->{filter} = $filter_sub;
-   MKDEBUG && _d('Set filter sub');
-   return;
-}
-
-# Required args:
-#   * dbh  dbh: an active dbh
-# Returns: list (itr, size) or scalar itr.
-# Can die: no
-# get_db_itr() returns an iterator which returns the next db found,
-# according to any set filters, when called successively.  In list context, the
-# second element the list is the number of elements over which it will iterate.
-sub get_db_itr {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(dbh);
+# Sub: _make_filters
+#   Create schema object filters from <OptionParser> options.  The OptionParser
+#   object passed to <new()> is checked for filter options like --database,
+#   --tables, --ignore-tables, etc.  For all such options, a hash is built
+#   keyed off the same option name.  So $filter{tables} represents --tables,
+#   etc.  Regex filters are pre-compiled.  It is very important to avoid
+#   auto-vivifying certain key-values; see below.  The filter hash is used
+#   in sub like <database_is_allowed()>.
+#
+#   This sub is called from <new()>.  That's the only place and time it
+#   needs to be called because options shouldn't change between runs.
+#
+# Parameters:
+#   %args - Arguments
+#
+# Required Arguments:
+#   OptionParser - <OptionParser> object.  All filters are gotten from this
+#                  obj: --databases, --tables, etc.
+#   Quoter       - <Quoter> object.
+#
+# Returns:
+#   Hashref of filters keyed on corresponding option names.
+sub _make_filters {
+   my ( %args ) = @_;
+   my @required_args = qw(OptionParser Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh) = @args{@required_args};
+   my ($o, $q) = @args{@required_args};
 
-   my $filter = $self->{filter};
-   my @dbs;
-   eval {
+   my %filters;
+
+   # Do not auto-vivify things like $filters{database} else a check like
+   # if ( !$filters{databases}->{foo} ) will be TRUE when it should be FALSE
+   # if no --databases where given.  When in doubt: SchemaIterator.t and
+   # check test coverage.  These filters must be accurate or else we may
+   # access something the user doesn't want us to.
+
+   my @simple_filters = qw(
+      databases         tables         engines
+      ignore-databases  ignore-tables  ignore-engines);
+   FILTER:
+   foreach my $filter ( @simple_filters ) {
+      if ( $o->has($filter) ) {
+         my $objs = $o->get($filter);
+         next FILTER unless $objs && scalar keys %$objs;
+         my $is_table = $filter =~ m/table/ ? 1 : 0;
+         foreach my $obj ( keys %$objs ) {
+            die "Undefined value for --$filter" unless $obj;
+            $obj = lc $obj;
+            if ( $is_table ) {
+               my ($db, $tbl) = $q->split_unquote($obj);
+               # Database-qualified tables require special handling.
+               # See table_is_allowed().
+               $db ||= '*';
+               MKDEBUG && _d('Filter', $filter, 'value:', $db, $tbl);
+               $filters{$filter}->{$tbl} = $db;
+            }
+            else { # database
+               MKDEBUG && _d('Filter', $filter, 'value:', $obj);
+               $filters{$filter}->{$obj} = 1;
+            }
+         }
+      }
+   }
+
+   my @regex_filters = qw(
+      databases-regex         tables-regex
+      ignore-databases-regex  ignore-tables-regex);
+   REGEX_FILTER:
+   foreach my $filter ( @regex_filters ) {
+      if ( $o->has($filter) ) {
+         my $pat = $o->get($filter);
+         next REGEX_FILTER unless $pat;
+         $filters{$filter} = qr/$pat/;
+         MKDEBUG && _d('Filter', $filter, 'value:', $filters{$filter});
+      }
+   }
+
+   MKDEBUG && _d('Schema object filters:', Dumper(\%filters));
+   return \%filters;
+}
+
+# Sub: next_schema_object
+#   Return the next schema object or undef when no more schema objects.
+#   Only filtered schema objects are returned.  If iterating dump files
+#   (i.e. the obj was created with a file_itr arg), then the returned
+#   schema object will always have a ddl (see below).  But if iterating
+#   a dbh, then you must create the obj with a MySQLDump obj to get a ddl.
+#   If this object was created with a TableParser, then the ddl, if present,
+#   is parsed, too.
+#
+# Returns:
+#   Hashref of schema object with at least a db and tbl keys, like
+#   (start code)
+#   {
+#      db         => 'test',
+#      tbl        => 'a',
+#      ddl        => 'CREATE TABLE `a` ( ...',  # if keep_ddl
+#      tbl_struct => <TableParser::parse()> hashref of parsed ddl,
+#   }
+#   (end code)
+#   The ddl is suitable for <TableParser::parse()>.
+sub next_schema_object {
+   my ( $self ) = @_;
+
+   my $schema_obj;
+   if ( $self->{file_itr} ) {
+      $schema_obj= $self->_iterate_files();
+   }
+   else { # dbh
+      $schema_obj= $self->_iterate_dbh();
+   }
+
+   if ( $schema_obj ) {
+      if ( $schema_obj->{ddl} && $self->{TableParser} ) {
+         $schema_obj->{tbl_struct}
+            = $self->{TableParser}->parse($schema_obj->{ddl});
+      }
+
+      delete $schema_obj->{ddl} unless $self->{keep_ddl};
+
+      if ( my $schema = $self->{Schema} ) {
+         $schema->add_schema_object($schema_obj);
+      }
+   }
+
+   MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
+   return $schema_obj;
+}
+
+sub _iterate_files {
+   my ( $self ) = @_;
+
+   if ( !$self->{fh} ) {
+      my ($fh, $file) = $self->{file_itr}->();
+      if ( !$fh ) {
+         MKDEBUG && _d('No more files to iterate');
+         return;
+      }
+      $self->{fh}   = $fh;
+      $self->{file} = $file;
+   }
+   my $fh = $self->{fh};
+   MKDEBUG && _d('Getting next schema object from', $self->{file});
+
+   local $INPUT_RECORD_SEPARATOR = '';
+   CHUNK:
+   while (defined(my $chunk = <$fh>)) {
+      if ($chunk =~ m/Database: (\S+)/) {
+         # If the file is a dump of one db, then the only indication of that
+         # db is in a comment at the start of the file like,
+         #   -- Host: localhost    Database: sakila
+         # If the dump is of multiple dbs, then there are both these same
+         # comments and USE statements.  We look for the comment which is
+         # unique to both single and multi-db dumps.
+         my $db = $1; # XXX
+         $db =~ s/^`//;  # strip leading `
+         $db =~ s/`$//;  # and trailing `
+         if ( $self->database_is_allowed($db) ) {
+            $self->{db} = $db;
+         }
+      }
+      elsif ($self->{db} && $chunk =~ m/CREATE TABLE/) {
+         if ($chunk =~ m/DROP VIEW IF EXISTS/) {
+            # Tables that are actually views have this DROP statment in the
+            # chunk just before the CREATE TABLE.  We don't want views.
+            MKDEBUG && _d('Table is a VIEW, skipping');
+            next CHUNK;
+         }
+
+         # The open comment is usually present for a view table, which we
+         # probably already detected and skipped above, but this is left her
+         # just in case mysqldump wraps other CREATE TABLE statements in a
+         # a version comment that I don't know about yet.
+         my ($tbl) = $chunk =~ m/$tbl_name/;
+         $tbl      =~ s/^\s*`//;
+         $tbl      =~ s/`\s*$//;
+         if ( $self->table_is_allowed($self->{db}, $tbl) ) {
+            my ($ddl) = $chunk =~ m/^(?:$open_comment)?(CREATE TABLE.+?;)$/ms;
+            if ( !$ddl ) {
+               warn "Failed to parse CREATE TABLE from\n" . $chunk;
+               next CHUNK;
+            }
+            $ddl =~ s/ \*\/;\Z/;/;  # remove end of version comment
+
+            my ($engine) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;   
+
+            if ( !$engine || $self->engine_is_allowed($engine) ) {
+               return {
+                  db  => $self->{db},
+                  tbl => $tbl,
+                  ddl => $ddl,
+               };
+            }
+         }
+      }
+   }  # CHUNK
+
+   MKDEBUG && _d('No more schema objects in', $self->{file});
+   close $self->{fh};
+   $self->{fh} = undef;
+
+   # Recurse to get next file and begin iterating it.  If there's no next
+   # file, then the call will return undef and we'll return undef, too
+   return $self->_iterate_files();
+}
+
+sub _iterate_dbh {
+   my ( $self ) = @_;
+   my $q   = $self->{Quoter};
+   my $dbh = $self->{dbh};
+   MKDEBUG && _d('Getting next schema object from dbh', $dbh);
+
+   if ( !defined $self->{dbs} ) {
+      # This happens once, the first time we're called.
       my $sql = 'SHOW DATABASES';
       MKDEBUG && _d($sql);
-      @dbs =  grep {
-         my $ok = $filter ? $filter->($dbh, $_, undef) : 1;
-         $ok = 0 if $_ =~ m/information_schema|performance_schema|lost\+found/;
-         $ok;
-      } @{ $dbh->selectcol_arrayref($sql) };
+      my @dbs = grep { $self->database_is_allowed($_) }
+                @{$dbh->selectcol_arrayref($sql)};
       MKDEBUG && _d('Found', scalar @dbs, 'databases');
-   };
-
-   MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);
-   my $iterator = sub {
-      return shift @dbs;
-   };
-
-   if (wantarray) {
-      return ($iterator, scalar @dbs);
+      $self->{dbs} = \@dbs;
    }
-   else {
-      return $iterator;
-   }
-}
 
-# Required args:
-#   * dbh    dbh: an active dbh
-#   * db     scalar: database name
-# Optional args:
-#   * views  bool: Permit/return views (default no)
-# Returns: either list(itr,size) or scalar itr
-# Can die: no
-# get_tbl_itr() returns an iterator which returns the next table found,
-# in the given db, according to any set filters, when called successively.
-# Make sure $dbh->{FetchHashKeyName} = 'NAME_lc' was set, else engine
-# filters won't work.  If the sub is called in list context, it also returns the
-# number of tables found.
-sub get_tbl_itr {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(dbh db);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
+   if ( !$self->{db} ) {
+      $self->{db} = shift @{$self->{dbs}};
+      MKDEBUG && _d('Next database:', $self->{db});
+      return unless $self->{db};
    }
-   my ($dbh, $db, $views) = @args{@required_args, 'views'};
 
-   my $filter = $self->{filter};
-   my @tbls;
-   if ( $db ) {
-      eval {
-         my $sql = 'SHOW /*!50002 FULL*/ TABLES FROM '
-                 . $self->{Quoter}->quote($db);
+   if ( !defined $self->{tbls} ) {
+      my $sql = 'SHOW /*!50002 FULL*/ TABLES FROM ' . $q->quote($self->{db});
+      MKDEBUG && _d($sql);
+      my @tbls = map {
+         $_->[0];  # (tbl, type)
+      }
+      grep {
+         my ($tbl, $type) = @$_;
+         $self->table_is_allowed($self->{db}, $tbl)
+            && (!$type || ($type ne 'VIEW'));
+      }
+      @{$dbh->selectall_arrayref($sql)};
+      MKDEBUG && _d('Found', scalar @tbls, 'tables in database', $self->{db});
+      $self->{tbls} = \@tbls;
+   }
+
+   while ( my $tbl = shift @{$self->{tbls}} ) {
+      my $engine;
+      if ( $self->{filters}->{'engines'}
+           || $self->{filters}->{'ignore-engines'} ) {
+         my $sql = "SHOW TABLE STATUS FROM " . $q->quote($self->{db})
+                 . " LIKE \'$tbl\'";
          MKDEBUG && _d($sql);
-         @tbls = map {
-            $_->[0]
+         $engine = $dbh->selectrow_hashref($sql)->{engine};
+         MKDEBUG && _d($tbl, 'uses', $engine, 'engine');
+      }
+
+
+      if ( !$engine || $self->engine_is_allowed($engine) ) {
+         my $ddl;
+         if ( my $du = $self->{MySQLDump} ) {
+            $ddl = $du->get_create_table($dbh, $q, $self->{db}, $tbl)->[1];
          }
-         grep {
-            my ($tbl, $type) = @$_;
-            my $ok = $filter ? $filter->($dbh, $db, $tbl) : 1;
-            if ( !$views ) {
-               # We don't want views therefore we have to check the table
-               # type.  Views are actually available in 5.0.1 but "FULL"
-               # in SHOW FULL TABLES was not added until 5.0.2.  So 5.0.1
-               # is an edge case that we ignore.  If >=5.0.2 then there
-               # might be views and $type will be Table_type and we check
-               # as normal.  Else, there cannot be views so there will be
-               # no $type.
-               $ok = 0 if ($type || '') eq 'VIEW';
-            }
-            $ok;
-         }
-         @{ $dbh->selectall_arrayref($sql) };
-         MKDEBUG && _d('Found', scalar @tbls, 'tables in', $db);
-      };
-      MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);
-   }
-   else {
-      MKDEBUG && _d('No db given so no tables');
+
+         return {
+            db  => $self->{db},
+            tbl => $tbl,
+            ddl => $ddl,
+         };
+      }
    }
 
-   my $iterator = sub {
-      return shift @tbls;
-   };
+   MKDEBUG && _d('No more tables in database', $self->{db});
+   $self->{db}   = undef;
+   $self->{tbls} = undef;
 
-   if ( wantarray ) {
-      return ($iterator, scalar @tbls);
-   }
-   else {
-      return $iterator;
-   }
+   # Recurse to get the next database.  If there's no next db, then the
+   # call will return undef and we'll return undef, too.
+   return $self->_iterate_dbh();
 }
 
-# Required args:
-#   * cond      scalar: condition for check, "if" or "unless"
-#   * var_name  scalar: literal var name to compare to obj values
-#   * objs      hashref: object values (as the hash keys)
-# Optional args:
-#   * lc  bool: lowercase object values
-# Returns: scalar
-# Can die: no
-# _make_filter() return a test condtion like "$var eq 'foo' || $var eq 'bar'".
-sub _make_filter {
-   my ( $cond, $var_name, $objs, $lc ) = @_;
-   my @lines;
-   if ( scalar keys %$objs ) {
-      my $test = join(' || ',
-         map { "$var_name eq '" . ($lc ? lc $_ : $_) ."'" } keys %$objs);
-      push @lines, "      return 0 $cond $var_name && ($test);",
+sub database_is_allowed {
+   my ( $self, $db ) = @_;
+   die "I need a db argument" unless $db;
+
+   $db = lc $db;
+
+   my $filter = $self->{filters};
+
+   if ( $db =~ m/information_schema|performance_schema|lost\+found/ ) {
+      MKDEBUG && _d('Database', $db, 'is a system database, ignoring');
+      return 0;
    }
-   return @lines;
+
+   if ( $self->{filters}->{'ignore-databases'}->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'is in --ignore-databases list');
+      return 0;
+   }
+
+   if ( $filter->{'ignore-databases-regex'}
+        && $db =~ $filter->{'ignore-databases-regex'} ) {
+      MKDEBUG && _d('Database', $db, 'matches --ignore-databases-regex');
+      return 0;
+   }
+
+   if ( $filter->{'databases'}
+        && !$filter->{'databases'}->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'is not in --databases list, ignoring');
+      return 0;
+   }
+
+   if ( $filter->{'databases-regex'}
+        && $db !~ $filter->{'databases-regex'} ) {
+      MKDEBUG && _d('Database', $db, 'does not match --databases-regex, ignoring');
+      return 0;
+   }
+
+   # MKDEBUG && _d('Database', $db, 'is allowed');
+   return 1;
+}
+
+sub table_is_allowed {
+   my ( $self, $db, $tbl ) = @_;
+   die "I need a db argument"  unless $db;
+   die "I need a tbl argument" unless $tbl;
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+
+   my $filter = $self->{filters};
+
+   if ( $filter->{'ignore-tables'}->{$tbl}
+        && ($filter->{'ignore-tables'}->{$tbl} eq '*'
+            || $filter->{'ignore-tables'}->{$tbl} eq $db) ) {
+      MKDEBUG && _d('Table', $tbl, 'is in --ignore-tables list');
+      return 0;
+   }
+
+   if ( $filter->{'ignore-tables-regex'}
+        && $tbl =~ $filter->{'ignore-tables-regex'} ) {
+      MKDEBUG && _d('Table', $tbl, 'matches --ignore-tables-regex');
+      return 0;
+   }
+
+   if ( $filter->{'tables'}
+        && !$filter->{'tables'}->{$tbl} ) { 
+      MKDEBUG && _d('Table', $tbl, 'is not in --tables list, ignoring');
+      return 0;
+   }
+
+   if ( $filter->{'tables-regex'}
+        && $tbl !~ $filter->{'tables-regex'} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not match --tables-regex, ignoring');
+      return 0;
+   }
+
+   # This handles a special case like "-d d2 -t d1.t1" where the user probably
+   # wants "all tables from database d1 plus table t1 from database d1."  In
+   # _make_filters() we cannot add d1 to the allowed databases filter because
+   # then we'll get d1 tables when the user only wants d2 tables.  So when
+   # a table passes allow filters, reaching this point, meaning it is allowed,
+   # we make this final to check to see if it's allowed in any database (*)
+   # or allowed in the specific database that the user qualifed the table with.
+   # The first two checks are to prevent auto-vivifying the filters which will
+   # cause bad results (see a similar comment in _make_filters()).
+   if ( $filter->{'tables'}
+        && $filter->{'tables'}->{$tbl}
+        && $filter->{'tables'}->{$tbl} ne '*'
+        && $filter->{'tables'}->{$tbl} ne $db ) {
+      MKDEBUG && _d('Table', $tbl, 'is only allowed in database',
+         $filter->{'tables'}->{$tbl});
+      return 0;
+   }
+
+   # MKDEBUG && _d('Table', $tbl, 'is allowed');
+   return 1;
+}
+
+sub engine_is_allowed {
+   my ( $self, $engine ) = @_;
+   die "I need an engine argument" unless $engine;
+
+   $engine = lc $engine;
+
+   my $filter = $self->{filters};
+
+   if ( $filter->{'ignore-engines'}->{$engine} ) {
+      MKDEBUG && _d('Engine', $engine, 'is in --ignore-databases list');
+      return 0;
+   }
+
+   if ( $filter->{'engines'}
+        && !$filter->{'engines'}->{$engine} ) {
+      MKDEBUG && _d('Engine', $engine, 'is not in --engines list, ignoring');
+      return 0;
+   }
+
+   # MKDEBUG && _d('Engine', $engine, 'is allowed');
+   return 1;
 }
 
 sub _d {
@@ -389,6 +491,7 @@ sub _d {
    print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
 }
 
+} # package scope
 1;
 
 # ###########################################################################

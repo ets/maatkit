@@ -44,8 +44,9 @@ my $output = output(
    sub {
       $osc->capture(
          dbh          => $dbh,
-         old_table    => 'osc.t',
-         new_table    => 'osc.__new_t',
+         db           => 'osc',
+         tbl          => 't',
+         tmp_tbl      => '__new_t',
          columns      => [qw(id c)],
          chunk_column => 'id',
          msg          => $msg,

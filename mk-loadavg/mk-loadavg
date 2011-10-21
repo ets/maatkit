@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -25,7 +25,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7460 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -4166,7 +4166,7 @@ Each argument defines the watch item: what particular value is watched and how
 to compare the current value to a threshold value (N).  Multiple watched
 items can be given by separating them with a comma, and the same watched
 item can be given multiple times (but, of course, it only makes sense to
-do this if the comparison and/or threshold values are differnt).
+do this if the comparison and/or threshold values are different).
 
 The first argument is the most important and is case-sensitive.  It
 defines the module responsible for watching the value.  For example,
@@ -4178,7 +4178,7 @@ arguments are passed to the WatchStatus module which parses them.  Each
 watch module requires different arguments.  The watch modules included
 in mk-loadavg and what arguments they require are listed below.
 
-This is a common error when specifying L<"--watch"> on the commnad line:
+This is a common error when specifying L<"--watch"> on the command line:
 
    mk-loadavg --watch Server:vmstat:swpd:>:0
 
@@ -4236,7 +4236,7 @@ values are:
   max_io_wait
 
 Several of those values can appear multiple times in the SHOW INNODB STATUS
-output.  The value used for comparison is always the higest value.  So the
+output.  The value used for comparison is always the highest value.  So the
 value for io_wait is the highest io_wait value for all the IO threads.
 
 =item Processlist
@@ -4376,7 +4376,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -4401,6 +4401,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7460 $.
 
 =cut

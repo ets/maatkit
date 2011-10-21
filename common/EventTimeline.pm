@@ -16,7 +16,7 @@
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 
 # ###########################################################################
-# EventTimeline package $Revision$
+# EventTimeline package $Revision: 6590 $
 # ###########################################################################
 
 package EventTimeline;

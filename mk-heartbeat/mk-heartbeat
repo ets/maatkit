@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 
-# This is mk-heartbeat, a script to measure replication delay.
+# This is mk-heartbeat, a tool to measure replication delay.
 #
 # This program is copyright 2007-@CURRENTYEAR@ Percona Inc.
 # and copyright 2006 Proven Scaling LLC and Six Apart Ltd.
@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
@@ -25,10 +25,10 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7588 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
-# MasterSlave package 6935
+# MasterSlave package 7587
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MasterSlave.pm
@@ -298,39 +298,40 @@ sub get_slave_status {
       MKDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
       $self->{not_a_slave}->{$dbh}++;
    }
+   return;
 }
 
 sub get_master_status {
    my ( $self, $dbh ) = @_;
-   if ( !$self->{not_a_master}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-            ||= $dbh->prepare('SHOW MASTER STATUS');
-      MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
-      $sth->execute();
-      my ($ms) = @{$sth->fetchall_arrayref({})};
 
-      if ( $ms && %$ms ) {
-         $ms = { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
-         if ( $ms->{file} && $ms->{position} ) {
-            return $ms;
-         }
-      }
+   if ( $self->{not_a_master}->{$dbh} ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+      return;
+   }
 
-      MKDEBUG && _d('This server returns nothing for SHOW MASTER STATUS');
+   my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
+         ||= $dbh->prepare('SHOW MASTER STATUS');
+   MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   $sth->execute();
+   my ($ms) = @{$sth->fetchall_arrayref({})};
+   MKDEBUG && _d(Dumper($ms));
+
+   if ( !$ms || scalar keys %$ms < 2 ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
       $self->{not_a_master}->{$dbh}++;
    }
+
+  return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
 sub wait_for_master {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_dbh slave_dbh);
+   my @required_args = qw(master_status slave_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $slave_dbh) = @args{@required_args};
+   my ($master_status, $slave_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
-   my $master_status = $args{master_status}
-                       || $self->get_master_status($master_dbh);
 
    my $result;
    my $waited;
@@ -338,8 +339,8 @@ sub wait_for_master {
       my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', "
               . "$master_status->{position}, $timeout)";
       MKDEBUG && _d($slave_dbh, $sql);
-      my $start  = time;
-      ($result)  = $slave_dbh->selectrow_array($sql);
+      my $start = time;
+      ($result) = $slave_dbh->selectrow_array($sql);
 
       $waited = time - $start;
 
@@ -381,7 +382,7 @@ sub start_slave {
 }
 
 sub catchup_to_master {
-   my ( $self, $slave, $master, $time ) = @_;
+   my ( $self, $slave, $master, $timeout ) = @_;
    $self->stop_slave($master);
    $self->stop_slave($slave);
    my $slave_status  = $self->get_slave_status($slave);
@@ -397,12 +398,12 @@ sub catchup_to_master {
       $self->start_slave($slave, $master_pos);
 
       $result = $self->wait_for_master(
-            master_dbh    => $master,
+            master_status => $master_status,
             slave_dbh     => $slave,
-            timeout       => $time,
+            timeout       => $timeout,
             master_status => $master_status
       );
-      if ( !defined $result ) {
+      if ( !defined $result->{result} ) {
          $slave_status = $self->get_slave_status($slave);
          if ( !$self->slave_is_running($slave_status) ) {
             MKDEBUG && _d('Master position:',
@@ -650,6 +651,7 @@ sub repl_posn {
 sub get_slave_lag {
    my ( $self, $dbh ) = @_;
    my $stat = $self->get_slave_status($dbh);
+   return unless $stat;
    return $stat->{seconds_behind_master};
 }
 
@@ -2534,6 +2536,657 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
+# TableParser package 7156
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableParser.pm
+#   trunk/common/t/TableParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package TableParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = { %args };
+   return bless $self, $class;
+}
+
+sub parse {
+   my ( $self, $ddl, $opts ) = @_;
+   return unless $ddl;
+   if ( ref $ddl eq 'ARRAY' ) {
+      if ( lc $ddl->[0] eq 'table' ) {
+         $ddl = $ddl->[1];
+      }
+      else {
+         return {
+            engine => 'VIEW',
+         };
+      }
+   }
+
+   if ( $ddl !~ m/CREATE (?:TEMPORARY )?TABLE `/ ) {
+      die "Cannot parse table definition; is ANSI quoting "
+         . "enabled or SQL_QUOTE_SHOW_CREATE disabled?";
+   }
+
+   my ($name)     = $ddl =~ m/CREATE (?:TEMPORARY )?TABLE\s+(`.+?`)/;
+   (undef, $name) = $self->{Quoter}->split_unquote($name) if $name;
+
+   $ddl =~ s/(`[^`]+`)/\L$1/g;
+
+   my $engine = $self->get_engine($ddl);
+
+   my @defs   = $ddl =~ m/^(\s+`.*?),?$/gm;
+   my @cols   = map { $_ =~ m/`([^`]+)`/ } @defs;
+   MKDEBUG && _d('Table cols:', join(', ', map { "`$_`" } @cols));
+
+   my %def_for;
+   @def_for{@cols} = @defs;
+
+   my (@nums, @null);
+   my (%type_for, %is_nullable, %is_numeric, %is_autoinc);
+   foreach my $col ( @cols ) {
+      my $def = $def_for{$col};
+      my ( $type ) = $def =~ m/`[^`]+`\s([a-z]+)/;
+      die "Can't determine column type for $def" unless $type;
+      $type_for{$col} = $type;
+      if ( $type =~ m/(?:(?:tiny|big|medium|small)?int|float|double|decimal|year)/ ) {
+         push @nums, $col;
+         $is_numeric{$col} = 1;
+      }
+      if ( $def !~ m/NOT NULL/ ) {
+         push @null, $col;
+         $is_nullable{$col} = 1;
+      }
+      $is_autoinc{$col} = $def =~ m/AUTO_INCREMENT/i ? 1 : 0;
+   }
+
+   my ($keys, $clustered_key) = $self->get_keys($ddl, $opts, \%is_nullable);
+
+   my ($charset) = $ddl =~ m/DEFAULT CHARSET=(\w+)/;
+
+   return {
+      name           => $name,
+      cols           => \@cols,
+      col_posn       => { map { $cols[$_] => $_ } 0..$#cols },
+      is_col         => { map { $_ => 1 } @cols },
+      null_cols      => \@null,
+      is_nullable    => \%is_nullable,
+      is_autoinc     => \%is_autoinc,
+      clustered_key  => $clustered_key,
+      keys           => $keys,
+      defs           => \%def_for,
+      numeric_cols   => \@nums,
+      is_numeric     => \%is_numeric,
+      engine         => $engine,
+      type_for       => \%type_for,
+      charset        => $charset,
+   };
+}
+
+sub sort_indexes {
+   my ( $self, $tbl ) = @_;
+
+   my @indexes
+      = sort {
+         (($a ne 'PRIMARY') <=> ($b ne 'PRIMARY'))
+         || ( !$tbl->{keys}->{$a}->{is_unique} <=> !$tbl->{keys}->{$b}->{is_unique} )
+         || ( $tbl->{keys}->{$a}->{is_nullable} <=> $tbl->{keys}->{$b}->{is_nullable} )
+         || ( scalar(@{$tbl->{keys}->{$a}->{cols}}) <=> scalar(@{$tbl->{keys}->{$b}->{cols}}) )
+      }
+      grep {
+         $tbl->{keys}->{$_}->{type} eq 'BTREE'
+      }
+      sort keys %{$tbl->{keys}};
+
+   MKDEBUG && _d('Indexes sorted best-first:', join(', ', @indexes));
+   return @indexes;
+}
+
+sub find_best_index {
+   my ( $self, $tbl, $index ) = @_;
+   my $best;
+   if ( $index ) {
+      ($best) = grep { uc $_ eq uc $index } keys %{$tbl->{keys}};
+   }
+   if ( !$best ) {
+      if ( $index ) {
+         die "Index '$index' does not exist in table";
+      }
+      else {
+         ($best) = $self->sort_indexes($tbl);
+      }
+   }
+   MKDEBUG && _d('Best index found is', $best);
+   return $best;
+}
+
+sub find_possible_keys {
+   my ( $self, $dbh, $database, $table, $quoter, $where ) = @_;
+   return () unless $where;
+   my $sql = 'EXPLAIN SELECT * FROM ' . $quoter->quote($database, $table)
+      . ' WHERE ' . $where;
+   MKDEBUG && _d($sql);
+   my $expl = $dbh->selectrow_hashref($sql);
+   $expl = { map { lc($_) => $expl->{$_} } keys %$expl };
+   if ( $expl->{possible_keys} ) {
+      MKDEBUG && _d('possible_keys =', $expl->{possible_keys});
+      my @candidates = split(',', $expl->{possible_keys});
+      my %possible   = map { $_ => 1 } @candidates;
+      if ( $expl->{key} ) {
+         MKDEBUG && _d('MySQL chose', $expl->{key});
+         unshift @candidates, grep { $possible{$_} } split(',', $expl->{key});
+         MKDEBUG && _d('Before deduping:', join(', ', @candidates));
+         my %seen;
+         @candidates = grep { !$seen{$_}++ } @candidates;
+      }
+      MKDEBUG && _d('Final list:', join(', ', @candidates));
+      return @candidates;
+   }
+   else {
+      MKDEBUG && _d('No keys in possible_keys');
+      return ();
+   }
+}
+
+sub check_table {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh db tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $db, $tbl) = @args{@required_args};
+   my $q      = $self->{Quoter};
+   my $db_tbl = $q->quote($db, $tbl);
+   MKDEBUG && _d('Checking', $db_tbl);
+
+   my $sql = "SHOW TABLES FROM " . $q->quote($db)
+           . ' LIKE ' . $q->literal_like($tbl);
+   MKDEBUG && _d($sql);
+   my $row;
+   eval {
+      $row = $dbh->selectrow_arrayref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !$row->[0] || $row->[0] ne $tbl ) {
+      MKDEBUG && _d('Table does not exist');
+      return 0;
+   }
+
+   MKDEBUG && _d('Table exists; no privs to check');
+   return 1 unless $args{all_privs};
+
+   $sql = "SHOW FULL COLUMNS FROM $db_tbl";
+   MKDEBUG && _d($sql);
+   eval {
+      $row = $dbh->selectrow_hashref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !scalar keys %$row ) {
+      MKDEBUG && _d('Table has no columns:', Dumper($row));
+      return 0;
+   }
+   my $privs = $row->{privileges} || $row->{Privileges};
+
+   $sql = "DELETE FROM $db_tbl LIMIT 0";
+   MKDEBUG && _d($sql);
+   eval {
+      $dbh->do($sql);
+   };
+   my $can_delete = $EVAL_ERROR ? 0 : 1;
+
+   MKDEBUG && _d('User privs on', $db_tbl, ':', $privs,
+      ($can_delete ? 'delete' : ''));
+
+   if ( !($privs =~ m/select/ && $privs =~ m/insert/ && $privs =~ m/update/
+          && $can_delete) ) {
+      MKDEBUG && _d('User does not have all privs');
+      return 0;
+   }
+
+   MKDEBUG && _d('User has all privs');
+   return 1;
+}
+
+sub get_engine {
+   my ( $self, $ddl, $opts ) = @_;
+   my ( $engine ) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;
+   MKDEBUG && _d('Storage engine:', $engine);
+   return $engine || undef;
+}
+
+sub get_keys {
+   my ( $self, $ddl, $opts, $is_nullable ) = @_;
+   my $engine        = $self->get_engine($ddl);
+   my $keys          = {};
+   my $clustered_key = undef;
+
+   KEY:
+   foreach my $key ( $ddl =~ m/^  ((?:[A-Z]+ )?KEY .*)$/gm ) {
+
+      next KEY if $key =~ m/FOREIGN/;
+
+      my $key_ddl = $key;
+      MKDEBUG && _d('Parsed key:', $key_ddl);
+
+      if ( $engine !~ m/MEMORY|HEAP/ ) {
+         $key =~ s/USING HASH/USING BTREE/;
+      }
+
+      my ( $type, $cols ) = $key =~ m/(?:USING (\w+))? \((.+)\)/;
+      my ( $special ) = $key =~ m/(FULLTEXT|SPATIAL)/;
+      $type = $type || $special || 'BTREE';
+      if ( $opts->{mysql_version} && $opts->{mysql_version} lt '004001000'
+         && $engine =~ m/HEAP|MEMORY/i )
+      {
+         $type = 'HASH'; # MySQL pre-4.1 supports only HASH indexes on HEAP
+      }
+
+      my ($name) = $key =~ m/(PRIMARY|`[^`]*`)/;
+      my $unique = $key =~ m/PRIMARY|UNIQUE/ ? 1 : 0;
+      my @cols;
+      my @col_prefixes;
+      foreach my $col_def ( $cols =~ m/`[^`]+`(?:\(\d+\))?/g ) {
+         my ($name, $prefix) = $col_def =~ m/`([^`]+)`(?:\((\d+)\))?/;
+         push @cols, $name;
+         push @col_prefixes, $prefix;
+      }
+      $name =~ s/`//g;
+
+      MKDEBUG && _d( $name, 'key cols:', join(', ', map { "`$_`" } @cols));
+
+      $keys->{$name} = {
+         name         => $name,
+         type         => $type,
+         colnames     => $cols,
+         cols         => \@cols,
+         col_prefixes => \@col_prefixes,
+         is_unique    => $unique,
+         is_nullable  => scalar(grep { $is_nullable->{$_} } @cols),
+         is_col       => { map { $_ => 1 } @cols },
+         ddl          => $key_ddl,
+      };
+
+      if ( $engine =~ m/InnoDB/i && !$clustered_key ) {
+         my $this_key = $keys->{$name};
+         if ( $this_key->{name} eq 'PRIMARY' ) {
+            $clustered_key = 'PRIMARY';
+         }
+         elsif ( $this_key->{is_unique} && !$this_key->{is_nullable} ) {
+            $clustered_key = $this_key->{name};
+         }
+         MKDEBUG && $clustered_key && _d('This key is the clustered key');
+      }
+   }
+
+   return $keys, $clustered_key;
+}
+
+sub get_fks {
+   my ( $self, $ddl, $opts ) = @_;
+   my $fks = {};
+
+   foreach my $fk (
+      $ddl =~ m/CONSTRAINT .* FOREIGN KEY .* REFERENCES [^\)]*\)/mg )
+   {
+      my ( $name ) = $fk =~ m/CONSTRAINT `(.*?)`/;
+      my ( $cols ) = $fk =~ m/FOREIGN KEY \(([^\)]+)\)/;
+      my ( $parent, $parent_cols ) = $fk =~ m/REFERENCES (\S+) \(([^\)]+)\)/;
+
+      if ( $parent !~ m/\./ && $opts->{database} ) {
+         $parent = "`$opts->{database}`.$parent";
+      }
+
+      $fks->{$name} = {
+         name           => $name,
+         colnames       => $cols,
+         cols           => [ map { s/[ `]+//g; $_; } split(',', $cols) ],
+         parent_tbl     => $parent,
+         parent_colnames=> $parent_cols,
+         parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
+         ddl            => $fk,
+      };
+   }
+
+   return $fks;
+}
+
+sub remove_auto_increment {
+   my ( $self, $ddl ) = @_;
+   $ddl =~ s/(^\).*?) AUTO_INCREMENT=\d+\b/$1/m;
+   return $ddl;
+}
+
+sub remove_secondary_indexes {
+   my ( $self, $ddl ) = @_;
+   my $sec_indexes_ddl;
+   my $tbl_struct = $self->parse($ddl);
+
+   if ( ($tbl_struct->{engine} || '') =~ m/InnoDB/i ) {
+      my $clustered_key = $tbl_struct->{clustered_key};
+      $clustered_key  ||= '';
+
+      my @sec_indexes   = map {
+         my $key_def = $_->{ddl};
+         $key_def =~ s/([\(\)])/\\$1/g;
+         $ddl =~ s/\s+$key_def//i;
+
+         my $key_ddl = "ADD $_->{ddl}";
+         $key_ddl   .= ',' unless $key_ddl =~ m/,$/;
+         $key_ddl;
+      }
+      grep { $_->{name} ne $clustered_key }
+      values %{$tbl_struct->{keys}};
+      MKDEBUG && _d('Secondary indexes:', Dumper(\@sec_indexes));
+
+      if ( @sec_indexes ) {
+         $sec_indexes_ddl = join(' ', @sec_indexes);
+         $sec_indexes_ddl =~ s/,$//;
+      }
+
+      $ddl =~ s/,(\n\) )/$1/s;
+   }
+   else {
+      MKDEBUG && _d('Not removing secondary indexes from',
+         $tbl_struct->{engine}, 'table');
+   }
+
+   return $ddl, $sec_indexes_ddl, $tbl_struct;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TableParser package
+# ###########################################################################
+
+# ###########################################################################
+# Transformers package 7226
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Transformers.pm
+#   trunk/common/t/Transformers.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Transformers;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Time::Local qw(timegm timelocal);
+use Digest::MD5 qw(md5_hex);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+require Exporter;
+our @ISA         = qw(Exporter);
+our %EXPORT_TAGS = ();
+our @EXPORT      = ();
+our @EXPORT_OK   = qw(
+   micro_t
+   percentage_of
+   secs_to_time
+   time_to_secs
+   shorten
+   ts
+   parse_timestamp
+   unix_timestamp
+   any_unix_timestamp
+   make_checksum
+   crc32
+);
+
+our $mysql_ts  = qr/(\d\d)(\d\d)(\d\d) +(\d+):(\d+):(\d+)(\.\d+)?/;
+our $proper_ts = qr/(\d\d\d\d)-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?/;
+our $n_ts      = qr/(\d{1,5})([shmd]?)/; # Limit \d{1,5} because \d{6} looks
+
+sub micro_t {
+   my ( $t, %args ) = @_;
+   my $p_ms = defined $args{p_ms} ? $args{p_ms} : 0;  # precision for ms vals
+   my $p_s  = defined $args{p_s}  ? $args{p_s}  : 0;  # precision for s vals
+   my $f;
+
+   $t = 0 if $t < 0;
+
+   $t = sprintf('%.17f', $t) if $t =~ /e/;
+
+   $t =~ s/\.(\d{1,6})\d*/\.$1/;
+
+   if ($t > 0 && $t <= 0.000999) {
+      $f = ($t * 1000000) . 'us';
+   }
+   elsif ($t >= 0.001000 && $t <= 0.999999) {
+      $f = sprintf("%.${p_ms}f", $t * 1000);
+      $f = ($f * 1) . 'ms'; # * 1 to remove insignificant zeros
+   }
+   elsif ($t >= 1) {
+      $f = sprintf("%.${p_s}f", $t);
+      $f = ($f * 1) . 's'; # * 1 to remove insignificant zeros
+   }
+   else {
+      $f = 0;  # $t should = 0 at this point
+   }
+
+   return $f;
+}
+
+sub percentage_of {
+   my ( $is, $of, %args ) = @_;
+   my $p   = $args{p} || 0; # float precision
+   my $fmt = $p ? "%.${p}f" : "%d";
+   return sprintf $fmt, ($is * 100) / ($of ||= 1);
+}
+
+sub secs_to_time {
+   my ( $secs, $fmt ) = @_;
+   $secs ||= 0;
+   return '00:00' unless $secs;
+
+   $fmt ||= $secs >= 86_400 ? 'd'
+          : $secs >= 3_600  ? 'h'
+          :                   'm';
+
+   return
+      $fmt eq 'd' ? sprintf(
+         "%d+%02d:%02d:%02d",
+         int($secs / 86_400),
+         int(($secs % 86_400) / 3_600),
+         int(($secs % 3_600) / 60),
+         $secs % 60)
+      : $fmt eq 'h' ? sprintf(
+         "%02d:%02d:%02d",
+         int(($secs % 86_400) / 3_600),
+         int(($secs % 3_600) / 60),
+         $secs % 60)
+      : sprintf(
+         "%02d:%02d",
+         int(($secs % 3_600) / 60),
+         $secs % 60);
+}
+
+sub time_to_secs {
+   my ( $val, $default_suffix ) = @_;
+   die "I need a val argument" unless defined $val;
+   my $t = 0;
+   my ( $prefix, $num, $suffix ) = $val =~ m/([+-]?)(\d+)([a-z])?$/;
+   $suffix = $suffix || $default_suffix || 's';
+   if ( $suffix =~ m/[smhd]/ ) {
+      $t = $suffix eq 's' ? $num * 1        # Seconds
+         : $suffix eq 'm' ? $num * 60       # Minutes
+         : $suffix eq 'h' ? $num * 3600     # Hours
+         :                  $num * 86400;   # Days
+
+      $t *= -1 if $prefix && $prefix eq '-';
+   }
+   else {
+      die "Invalid suffix for $val: $suffix";
+   }
+   return $t;
+}
+
+sub shorten {
+   my ( $num, %args ) = @_;
+   my $p = defined $args{p} ? $args{p} : 2;     # float precision
+   my $d = defined $args{d} ? $args{d} : 1_024; # divisor
+   my $n = 0;
+   my @units = ('', qw(k M G T P E Z Y));
+   while ( $num >= $d && $n < @units - 1 ) {
+      $num /= $d;
+      ++$n;
+   }
+   return sprintf(
+      $num =~ m/\./ || $n
+         ? "%.${p}f%s"
+         : '%d',
+      $num, $units[$n]);
+}
+
+sub ts {
+   my ( $time, $gmt ) = @_;
+   my ( $sec, $min, $hour, $mday, $mon, $year )
+      = $gmt ? gmtime($time) : localtime($time);
+   $mon  += 1;
+   $year += 1900;
+   my $val = sprintf("%d-%02d-%02dT%02d:%02d:%02d",
+      $year, $mon, $mday, $hour, $min, $sec);
+   if ( my ($us) = $time =~ m/(\.\d+)$/ ) {
+      $us = sprintf("%.6f", $us);
+      $us =~ s/^0\././;
+      $val .= $us;
+   }
+   return $val;
+}
+
+sub parse_timestamp {
+   my ( $val ) = @_;
+   if ( my($y, $m, $d, $h, $i, $s, $f)
+         = $val =~ m/^$mysql_ts$/ )
+   {
+      return sprintf "%d-%02d-%02d %02d:%02d:"
+                     . (defined $f ? '%09.6f' : '%02d'),
+                     $y + 2000, $m, $d, $h, $i, (defined $f ? $s + $f : $s);
+   }
+   return $val;
+}
+
+sub unix_timestamp {
+   my ( $val, $gmt ) = @_;
+   if ( my($y, $m, $d, $h, $i, $s, $us) = $val =~ m/^$proper_ts$/ ) {
+      $val = $gmt
+         ? timegm($s, $i, $h, $d, $m - 1, $y)
+         : timelocal($s, $i, $h, $d, $m - 1, $y);
+      if ( defined $us ) {
+         $us = sprintf('%.6f', $us);
+         $us =~ s/^0\././;
+         $val .= $us;
+      }
+   }
+   return $val;
+}
+
+sub any_unix_timestamp {
+   my ( $val, $callback ) = @_;
+
+   if ( my ($n, $suffix) = $val =~ m/^$n_ts$/ ) {
+      $n = $suffix eq 's' ? $n            # Seconds
+         : $suffix eq 'm' ? $n * 60       # Minutes
+         : $suffix eq 'h' ? $n * 3600     # Hours
+         : $suffix eq 'd' ? $n * 86400    # Days
+         :                  $n;           # default: Seconds
+      MKDEBUG && _d('ts is now - N[shmd]:', $n);
+      return time - $n;
+   }
+   elsif ( $val =~ m/^\d{9,}/ ) {
+      MKDEBUG && _d('ts is already a unix timestamp');
+      return $val;
+   }
+   elsif ( my ($ymd, $hms) = $val =~ m/^(\d{6})(?:\s+(\d+:\d+:\d+))?/ ) {
+      MKDEBUG && _d('ts is MySQL slow log timestamp');
+      $val .= ' 00:00:00' unless $hms;
+      return unix_timestamp(parse_timestamp($val));
+   }
+   elsif ( ($ymd, $hms) = $val =~ m/^(\d{4}-\d\d-\d\d)(?:[T ](\d+:\d+:\d+))?/) {
+      MKDEBUG && _d('ts is properly formatted timestamp');
+      $val .= ' 00:00:00' unless $hms;
+      return unix_timestamp($val);
+   }
+   else {
+      MKDEBUG && _d('ts is MySQL expression');
+      return $callback->($val) if $callback && ref $callback eq 'CODE';
+   }
+
+   MKDEBUG && _d('Unknown ts type:', $val);
+   return;
+}
+
+sub make_checksum {
+   my ( $val ) = @_;
+   my $checksum = uc substr(md5_hex($val), -16);
+   MKDEBUG && _d($checksum, 'checksum for', $val);
+   return $checksum;
+}
+
+sub crc32 {
+   my ( $string ) = @_;
+   return unless $string;
+   my $poly = 0xEDB88320;
+   my $crc  = 0xFFFFFFFF;
+   foreach my $char ( split(//, $string) ) {
+      my $comp = ($crc ^ ord($char)) & 0xFF;
+      for ( 1 .. 8 ) {
+         $comp = $comp & 1 ? $poly ^ ($comp >> 1) : $comp >> 1;
+      }
+      $crc = (($crc >> 8) & 0x00FFFFFF) ^ $comp;
+   }
+   return $crc ^ 0xFFFFFFFF;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Transformers package
+# ###########################################################################
+
+# ###########################################################################
 # This is a combination of modules and programs in one -- a runnable module.
 # http://www.perl.com/pub/a/2006/07/13/lightning-articles.html?page=last
 # Or, look it up in the Camel book on pages 642 and 643 in the 3rd edition.
@@ -2545,16 +3198,22 @@ package mk_heartbeat;
 
 use English qw(-no_match_vars);
 use List::Util qw(min max sum);
-use Time::HiRes qw(usleep gettimeofday);
+use Time::HiRes qw(gettimeofday time sleep usleep);
 use IO::File;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+Transformers->import qw(ts unix_timestamp);
 
 my @dbhs;  # Holds slave DBHs if --recurse
 my @sths;  # Holds [$host, $sth] if --recurse
 
 sub main {
    @ARGV = @_;  # set global ARGV for this package
+
+   # Reset all global vars between test runs else weird things happen.
+   @dbhs = ();
+   @sths = ();  
 
    # ########################################################################
    # Get configuration information.
@@ -2563,8 +3222,11 @@ sub main {
    $o->get_specs();
    $o->get_opts();
 
-   if ( !$o->get('help') ) {
+   my $dp = $o->DSNParser;
+   $dp->prop('dbidriver', $o->get('dbi-driver'));
+   $dp->prop('set-vars', $o->get('set-vars'));
 
+   if ( !$o->get('help') ) {
       my @frames = $o->get('frames') =~ m/(\d+[smhd])/g;
       if ( @frames ) {
          my @times;
@@ -2591,20 +3253,33 @@ sub main {
            && !($o->get('database') && $o->get('table'))) {
          $o->save_error('--create-table requires both --database and --table');
       }
-   }
 
-   $o->set('interval', max($o->get('interval'), 1)); # Prevent 0-second interval
+      if ( $o->get('interval') < 0.01 ) {
+         $o->save_error("--interval must be >= 0.01");
+      }
+
+      if ( !$o->get('stop') && !$o->get('database') ) {
+         $o->save_error('--database must be specified');
+      }
+   }
 
    $o->usage_or_errors();
 
-   # Frequently used options.
+   # ########################################################################
+   # Make common modules and var for frequently used options.
+   # ########################################################################
+   my $q  = new Quoter();
+   my $tp = new TableParser(Quoter => $q);
+
    my $interval = $o->get('interval');
+   my $skew     = $o->get('update') ? 0 : $o->get('skew');
    my $sentinel = $o->get('sentinel');
-   my $table    = $o->get('table');
    my $frames   = $o->get('frames');
+   my $db       = $o->get('database');
+   my $tbl      = $o->get('table');
 
    # ########################################################################
-   # First things first: if --stop was given, create the sentinel file.
+   # Create --sentinel file if --stop was given, and possibly exit.
    # ########################################################################
    if ( $o->get('stop') ) {
       MKDEBUG && _d('Creating sentinel file', $sentinel);
@@ -2614,8 +3289,7 @@ sub main {
          or die "Cannot write to $sentinel: $OS_ERROR\n";
       close $file
          or die "Cannot close $sentinel: $OS_ERROR\n";
-      print STDOUT "Successfully created file $sentinel\n"
-         unless $o->get('quiet');
+      print STDOUT "Successfully created file $sentinel\n";
       # Exit only if no other action (update, monitor, check) is given.
       if ( !$o->get('update') && !$o->get('check') && !$o->get('monitor') ) {
          MKDEBUG && _d("Nothing more to do, quitting");
@@ -2626,7 +3300,7 @@ sub main {
          # same --interval as this invocation.  Then remove the file and
          # continue.
          MKDEBUG && _d("Waiting for other instances to quit");
-         sleep($interval);
+         sleep $interval ;
          MKDEBUG && _d("Unlinking", $sentinel);
          unlink $sentinel
             or die "Cannot unlink $sentinel: $OS_ERROR";
@@ -2634,67 +3308,268 @@ sub main {
    }
 
    # ########################################################################
-   # Work.
+   # Connect to MySQL.
    # ########################################################################
-   my $update_sql = $o->get('replace')
-                  ? "REPLACE INTO $table(id, ts) VALUES(1, NOW())"
-                  : "UPDATE $table SET ts = NOW() WHERE id = 1";
-   my $select_sql = "SELECT "
-                  . ( $o->get('dbi-driver') eq 'Pg'
-                     ? "ROUND(DATE_PART('epoch', NOW() - ts)) AS delay"
-                     : 'UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts) AS delay/*!50038, @@hostname AS host*/' )
-                  . " FROM $table WHERE id = 1";
-
-   MKDEBUG && _d("UPDATE SQL:", $update_sql);
-   MKDEBUG && _d("SELECT SQL:", $select_sql);
-
-   # Get the password before daemonizing.
    if ( $o->get('ask-pass') ) {
       $o->set('password', OptionParser::prompt_noecho("Enter password: "));
    }
-
-   my $dp = $o->DSNParser;
-   $dp->prop('dbidriver', $o->get('dbi-driver'));
-   $dp->prop('set-vars', $o->get('set-vars'));
    my $dsn_defaults = $dp->parse_options($o);
    my $dsn          = @ARGV ? $dp->parse(shift @ARGV, $dsn_defaults)
                     :         $dsn_defaults;
-   my $dbh          = $dp->get_dbh($dp->get_cxn_params($dsn),
-                              { AutoCommit => 1, });
-   my $sth = $dbh->prepare($o->get('update') ? $update_sql : $select_sql);
+   my $dbh          = $dp->get_dbh($dp->get_cxn_params($dsn), {AutoCommit=>1});
 
    $dbh->{InactiveDestroy}  = 1; # Don't disconnect on fork
+   $dbh->{FetchHashKeyName} = 'NAME_lc';
+   $dbh->do("USE `$db`");
 
-   # Create the heartbeat table if desired.
+   # ########################################################################
+   # Create the heartbeat table if --create-table was given.
+   # ########################################################################
+   my $db_tbl    = $q->quote($db, $tbl);
+   my $server_id = $dbh->selectrow_array('SELECT @@server_id');
    if ( $o->get('create-table') ) {
-      my $q      = new Quoter();
-      my $db_tbl = $q->quote($o->get('database'), $o->get('table'));
-      my $sql    = $o->read_para_after(
-         __FILE__, qr/MAGIC_create_heartbeat/);
+      my $sql = $o->read_para_after(__FILE__, qr/MAGIC_create_heartbeat/);
       $sql =~ s/heartbeat/IF NOT EXISTS $db_tbl/;
       MKDEBUG && _d($sql);
       $dbh->do($sql);
 
-      $sql = "INSERT INTO $db_tbl (id) VALUES (1)";
+      $sql = "INSERT INTO $db_tbl (ts, server_id) VALUES (NOW(), $server_id)";
       MKDEBUG && _d($sql);
       # This may fail if the table already existed and already had this row.
       # We eval to ignore this possibility.
       eval { $dbh->do($sql); };
    }
 
-   # Do a little check just to make sure the table is there, so there's one last
-   # chance to catch errors before daemonizing.
-   $sth->execute();
-   $sth->finish();
+   # ########################################################################
+   # Get and check heartbeat table structure.
+   # ########################################################################
+   my $tbl_def    = $dbh->selectrow_arrayref("SHOW CREATE TABLE $db_tbl");
+   my $tbl_struct = $tp->parse($tbl_def->[1]);
 
-   # Check that heartbeat table has at least 1 row.
-   my $row = $dbh->selectall_arrayref("SELECT id FROM $table LIMIT 1");
-   if ( scalar @$row == 0 ) {
-      die "The heartbeat table is empty.\n"
-         . "At least one row must be inserted into the heartbeat table.\n"
-         . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+   die "Heartbeat table $db_tbl does not have a ts column"
+      unless $tbl_struct->{is_col}->{ts};
+
+   my $hires_ts = $tbl_struct->{type_for}->{ts} =~ m/char/i ? 1 : 0;
+   MKDEBUG && _d("Hi-res ts:", ($hires_ts ? 'yes' : 'no'));
+
+   my $id = $tbl_struct->{is_col}->{id};  # legacy table struct
+   die "Heartbeat table $db_tbl does not have a server_id or id column"
+      unless $tbl_struct->{is_col}->{server_id} || $id;
+
+   # If there's an id column, then we're running in legacy mode.  If there's
+   # a server_id column, then we're running in the new mode which supports
+   # multiple --update instances.
+   if ( $tbl_struct->{is_col}->{id} && $tbl_struct->{is_col}->{server_id} ) {
+      die "Heartbeat table $db_tbl cannot have both an id column and "
+         . "a server_id column";
    }
 
+   # pk_col and pk_val are used to identify the heartbeat row to update or
+   # or monitor.
+   my ($pk_col, $pk_val);
+   if ( $id ) {
+      # Legacy mode: update heartbeat row WHERE id=1 and monitor heartbeat
+      # row WHERE id=1.
+      $pk_col = 'id';
+      $pk_val = '1';
+   }
+   elsif ( $tbl_struct->{is_col}->{server_id} ) {
+      # Multi-update mode: update heartbeat row WHERE server_id=@@server_id
+      # and monitor heartbeat row WHERE server_id=master_server_id.
+      if ( $o->get('update') ) {
+         $pk_col = 'server_id';
+         $pk_val = $server_id;
+      }
+      else {  # monitor or check
+         my $master_server_id = $o->get('master-server-id');
+         if ( !$master_server_id ) {
+            eval {
+               my $vp = new VersionParser();
+               my $ms = new MasterSlave(VersionParser => $vp);
+               my $master_dsn = $ms->get_master_dsn($dbh, $dsn, $dp)
+                  or die "This server is not a slave";
+               my $master_dbh = $dp->get_dbh($dp->get_cxn_params($master_dsn),
+                  { AutoCommit => 1 });
+               ($master_server_id)
+                  = $master_dbh->selectrow_array('SELECT @@server_id');
+               $master_dbh->disconnect;
+            };
+            if ( $EVAL_ERROR ) {
+               MKDEBUG && _d("Error determining master id:", $EVAL_ERROR);
+            }
+         }
+         if ( !$master_server_id ) {
+            die "The --master-server-id option must be specified because "
+               . "the heartbeat table $db_tbl uses the server_id column "
+               . "for --update or --check but the server's master could "
+               . "not be automatically determined.\n"
+               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         }
+         $pk_col = 'server_id';
+         $pk_val = $master_server_id;
+      }
+   }
+   else {
+      die "Heartbeat table $db_tbl does not have a server_id or id column";
+   }
+   MKDEBUG && _d('Heartbeat row primary key:', $pk_col, '=', $pk_val);
+
+   # Check that heartbeat table has at least 1 row unless --replace because
+   # --replace will create the row if it doesn't exist.
+   if ( !$o->get('replace') ) {
+      my $sql = "SELECT 1 FROM $db_tbl WHERE $pk_col='$pk_val' LIMIT 1";
+      MKDEBUG && _d($sql);
+      my $row = $dbh->selectall_arrayref($sql);
+      if ( scalar @$row == 0 ) {
+         MKDEBUG && _d('No heartbeat row in table');
+         if ( $o->get('insert-heartbeat-row') ) {
+            my $sql = "INSERT INTO $db_tbl ($pk_col, ts) "
+                    . "VALUES ('$pk_val', NOW())";
+            MKDEBUG && _d($sql);
+            $dbh->do($sql);
+         }
+         else {
+            if ( $id ) {
+               die "The heartbeat table is empty.\n"
+                  . "At least one row must be inserted into the heartbeat "
+                  . "table.\nPlease read the DESCRIPTION section of the "
+                  . "mk-heartbeat POD.\n";
+           }
+           else {
+               die "No row found in heartbeat table for server_id $pk_val.\n"
+                  . "At least one row must be inserted into the heartbeat "
+                  . "table for server_id $pk_val.\nPlease read the "
+                  . "DESCRIPTION section of the mk-heartbeat POD.\n";
+           }
+         }
+      }
+   }
+
+   # ########################################################################
+   # Make sth for updating or checking the heartbeat table.
+   # ########################################################################
+   my ($heartbeat_sql, $heartbeat_sth);
+   my ($get_delay, $update_heartbeat);
+
+   if ( $o->get('update') ) {
+      my @master_status_cols = grep { $tbl_struct->{is_col}->{$_} }
+         qw(file position);
+      MKDEBUG && _d("Master status columns:", join(', ', @master_status_cols));
+
+      my @slave_status_cols  = grep { $tbl_struct->{is_col}->{$_} }
+         qw(relay_master_log_file exec_master_log_pos);
+      MKDEBUG && _d("Slave status columns:", join(', ', @slave_status_cols));
+
+      # Just a shortcut so I don't have to check both arrays when creating
+      # SQL statement below.
+      my @extra_cols = (@master_status_cols, @slave_status_cols);
+
+      if ( $o->get('replace') ) {
+         $heartbeat_sql
+            = "REPLACE INTO $db_tbl (ts, $pk_col"
+            . (@extra_cols ? ", " . join(', ', @extra_cols) : '')
+            . ") VALUES (?, '$pk_val'"
+            . (@extra_cols ? ", " . join(', ', map { '?' } @extra_cols) : '')
+            . ")";
+      }
+      else {
+         $heartbeat_sql
+            = "UPDATE $db_tbl SET ts=?"
+            . (@extra_cols ? ", " . join(', ', map { "$_=?" } @extra_cols) : "")
+            . " WHERE $pk_col='$pk_val'";
+      }
+      MKDEBUG && _d("UPDATE SQL:", $heartbeat_sql);
+
+      $heartbeat_sth = $dbh->prepare($heartbeat_sql);
+
+      $update_heartbeat = sub {
+         my ($sth) = @_;
+         my @vals;
+        
+         my $sql; 
+         if ( @master_status_cols ) {
+            $sql = "SHOW MASTER STATUS";
+            MKDEBUG && _d($dbh, $sql);
+            my $row = $dbh->selectrow_hashref($sql);
+            if ( !$row ) {
+               MKDEBUG && _d("No row from", $sql);
+               push @vals, map { undef } @master_status_cols;
+            }
+            else {
+               push @vals, map { $row->{$_} } @master_status_cols;
+            }
+         }
+         
+         if ( @slave_status_cols ) {
+            $sql = "SHOW SLAVE STATUS";
+            MKDEBUG && _d($dbh, $sql);
+            my $row = $dbh->selectrow_hashref($sql);
+            if ( !$row ) {
+               MKDEBUG && _d("No row from", $sql);
+               push @vals, map { undef } @slave_status_cols;
+            }
+            else {
+               push @vals, map { $row->{$_} } @slave_status_cols;
+            }
+         }
+
+         $sth->execute(ts(time), @vals);
+         MKDEBUG && _d($sth->{Statement});
+         $sth->finish();
+
+         return;
+      };
+   }
+   else { # --monitor or --check
+      my $dbi_driver = lc $o->get('dbi-driver');
+
+      $heartbeat_sql
+         = "SELECT ts"
+         . ($dbi_driver eq 'mysql' ? '/*!50038, @@hostname AS host*/' : '')
+         . ($id ? "" : ", server_id")
+         . " FROM $db_tbl "
+         . "WHERE $pk_col='$pk_val' "
+         . "LIMIT 1";
+      MKDEBUG && _d("SELECT SQL:", $heartbeat_sql);
+
+      $heartbeat_sth = $dbh->prepare($heartbeat_sql);
+
+      $get_delay = sub {
+         my ($sth) = @_;
+         $sth->execute();
+         MKDEBUG && _d($sth->{Statement});
+         my ($ts, $hostname, $server_id) = $sth->fetchrow_array();
+         my $now = time;
+         MKDEBUG && _d("Heartbeat from server", $server_id, "\n",
+            " now:", ts($now), "\n",
+            "  ts:", $ts, "\n",
+            "skew:", $skew);
+         my $delay = $now - unix_timestamp($ts) - $skew;
+         MKDEBUG && _d('Delay', sprintf('%.6f', $delay), 'on', $hostname);
+
+         # Because we adjust for skew, if the ts are less than skew seconds
+         # apart (i.e. replication is very fast) then delay will be negative. 
+         # So it's effectively 0 seconds of lag.
+         $delay = 0.00 if $delay < 0;
+
+         $sth->finish();
+         return ($delay, $hostname, $pk_val);
+      };
+   }
+
+   # Do a little check just to make sure the table is there, so there's one last
+   # chance to catch errors before daemonizing.
+   if ( $o->get('update') ) {
+      $update_heartbeat->($heartbeat_sth);
+   }
+   else {
+      $get_delay->($heartbeat_sth);
+   }
+   $heartbeat_sth->finish();
+
+   # ########################################################################
+   # Daemonize only after (potentially) asking for passwords for --ask-pass.
+   # ########################################################################
    my $daemon;
    if ( $o->get('daemonize') ) {
       $daemon = new Daemon(o=>$o);
@@ -2707,55 +3582,76 @@ sub main {
       $daemon->make_PID_file();
    }
 
-   # Setup for moving averages.
-   my @samples;
-   my $limit  = max(@$frames);
-   my $format = "%4ds [ " . join(", ", map { "%5.2fs" } @$frames) . " ]\n";
-
-   my $now = time();
-   my $end = $now + ($o->get('run-time') || 0);    # When to exit
-   MKDEBUG && _d('Will exit at', $end);
-
-   # --monitor and --update run in a loop, but --check only checks once and
-   # exits.
+   # ########################################################################
+   # --check and exit if --check was given.
+   # ########################################################################
    if ( $o->get('check') ) { 
+      MKDEBUG && _d('--check and exit');
       check_delay(
-         o          => $o,
-         dp         => $dp,
-         dsn        => $dsn,
-         dbh        => $dbh,
-         sth        => $sth,
-         select_sql => $select_sql,
+         dsn          => $dsn,
+         dbh          => $dbh,
+         sth          => $heartbeat_sth,
+         sql          => $heartbeat_sql,
+         get_delay    => $get_delay,
+         interval     => $interval,
+         skew         => $skew,
+         hires_ts     => $hires_ts,
+         OptionParser => $o,
+         DSNParser    => $dp,
       );
-      disconnect($dbh, $sth);
+      disconnect($dbh, $heartbeat_sth);
       return 0;
    }
 
-   # Quit if time is exceeded or sentinel exists.
-   while ( (!$o->get('run-time') || $now < $end) && !-f $sentinel ) {
-      eval {
+   # ########################################################################
+   # Setup moving averages for --frames.
+   # ########################################################################
+   my @samples;
+   my $limit  = max(@$frames);
 
-         my @now = gettimeofday();
-         usleep(
-            (($interval - ($now[0] % $interval)) * 1_000_000) - $now[1]
-            # --update happens at the second boundary, but --monitor and --check
-            # are delayed to avoid spurious results.
-            + ($o->get('update') ? 0 : $o->get('skew') ));
-         MKDEBUG && _d('Woke up at', gettimeofday());
+   # 2.00s [  0.05s,  0.01s,  0.00s ]
+   my $format = ($hires_ts ? '%.2f' : '%4d') . "s "
+              . "[ " . join(", ", map { "%5.2fs" } @$frames) . " ]"
+              . ($o->get('print-master-server-id') ? " %d" : '')
+              . "\n";
+
+   # ########################################################################
+   # Monitor or update the heartbeat table.
+   # ########################################################################
+   my $end = $o->get('run-time') ? int(time + $o->get('run-time')) : 0;
+   MKDEBUG && _d($end ? ('Will exit at', ts($end)) : 'Running forever');
+
+   my $get_next_interval = make_interval_iter($interval, $skew);
+
+   while (                         # Stop if...
+      (!$end || int(time) < $end)  # runtime exceeded, or
+      && !-f $sentinel             # sentinel file created
+   ) {
+      eval {
+         my $next_interval = $get_next_interval->();
+         if ( time >= $next_interval ) {
+            do { $next_interval = $get_next_interval->() }
+               until $next_interval > time;
+            MKDEBUG && _d("Missed last interval; next interval:",
+               ts($next_interval));
+         }
+         sleep $next_interval - time;
+         MKDEBUG && _d('Woke up at', ts(time));
 
          # Connect or reconnect if necessary.
          if ( !$dbh->ping() ) {
             $dbh = $dp->get_dbh($dp->get_cxn_params($dsn), { AutoCommit => 1 });
-            $sth = undef;
+            $dbh->{InactiveDestroy}  = 1; # Don't disconnect on fork
+            $dbh->{FetchHashKeyName} = 'NAME_lc';
+            $dbh->do("USE `$db`");
+
+            $heartbeat_sth = undef;
          }
 
          if ( $o->get('monitor') ) {
-            # Get the data
-            $sth ||= $dbh->prepare($select_sql);
-            $sth->execute();
-            MKDEBUG && _d($sth->{Statement});
-            my ( $delay ) = $sth->fetchrow_array();
-            MKDEBUG && _d('Found delay of', $delay);
+            $heartbeat_sth ||= $dbh->prepare($heartbeat_sql);
+            my ($delay) = $get_delay->($heartbeat_sth);
+
             unshift @samples, $delay;
             pop @samples if @samples > $limit;
 
@@ -2764,7 +3660,8 @@ sub main {
                my $bound = min($_, scalar(@samples));
                sum(@samples[0 .. $bound-1]) / $_;
             } @$frames;
-            my $output = sprintf($format, $delay, @vals);
+
+            my $output = sprintf $format, $delay, @vals, $pk_val;
             if ( my $file = $o->get('file') ) { 
                open my $file, '>', $file
                   or die "Can't open $file: $OS_ERROR";
@@ -2774,28 +3671,26 @@ sub main {
                   or die "Can't close $file: $OS_ERROR";
             }
             else {
-               print $output unless $o->get('quiet');
+               print $output;
             }
          }
          else { # --update mode
-            $sth ||= $dbh->prepare($update_sql);
-            $sth->execute();
-            MKDEBUG && _d($sth->{Statement});
+            $heartbeat_sth ||= $dbh->prepare($heartbeat_sql);
+            $update_heartbeat->($heartbeat_sth);
          }
       };
       if ( $EVAL_ERROR ) {
          my ( $err ) = $EVAL_ERROR =~ m/^(?:DBI|DBD).*failed: (.*?)\s*at \S+ line .*/;
          if ( $err ) {
-            print STDERR $err, "\n";
+            warn "$err\n";
          }
          else {
             die $EVAL_ERROR;
          }
       }
-      $now = time();
    }
 
-   disconnect($dbh, $sth);
+   disconnect($dbh, $heartbeat_sth);
    return 0;
 }
 
@@ -2806,11 +3701,12 @@ sub main {
 # Check the delay on a single server.  Optionally recurse to all its slaves.
 sub check_delay {
    my ( %args ) = @_;
-   foreach my $arg ( qw(dp dsn dbh) ) {
+   my @required_args = qw(dsn dbh sth sql get_delay interval skew OptionParser DSNParser);
+   foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my $o = $args{o};
-
+   my ($dsn, $dbh, $sth, $sql, $get_delay, $interval, $skew, $o, $dp)
+      = @args{@required_args};
    MKDEBUG && _d('Checking slave delay');
 
    # Collect a list of connections to the slaves.
@@ -2819,52 +3715,89 @@ sub check_delay {
       my $vp = new VersionParser();
       my $ms = new MasterSlave(VersionParser => $vp);
       $ms->recurse_to_slaves(
-         {  dbh => $args{dbh},
-            dsn => $args{dsn},
-            dsn_parser => $args{dp},
+         {  dbh        => $dbh,
+            dsn        => $dsn,
+            dsn_parser => $dp,
             recurse    => $o->get('recurse'),
             callback   => sub {
                my ( $dsn, $dbh, $level ) = @_;
                push @dbhs, $dbh;
-               push @sths, [ $dsn, $dbh->prepare($args{select_sql}) ];
+               MKDEBUG && _d("Found slave", $dp->as_string($dsn));
+               push @sths, [ $dsn, $dbh->prepare($sql) ];
             },
             method => $o->get('recursion-method'),
          },
       );
    }
    else {
-      push @sths, [ $args{dsn}, $args{sth} ];
+      push @sths, [ $dsn, $sth ];
    }
 
-   # Assume that each query will be very fast, so there's no real need to
-   # sleep between EACH server checked.
-   my @now = gettimeofday();
-   usleep((($o->get('interval') - ($now[0] % $o->get('interval'))) * 1_000_000)
-      - $now[1] + $o->get('skew'));
-   MKDEBUG && _d('Woke up at', gettimeofday());
+   my $format_delay = ($args{hires_ts} ? '%.2f' : '%d')
+                    . ($o->get('print-master-server-id') ? " %d" : "")
+                    . "\n";
+   my $format_host  = "%-20s $format_delay";
 
+   # Before hi-res ts, we could check all slaves at one interval, assuming
+   # the checks were fast, i.e. able to be done within one interval.  But
+   # now we have intervals up to 0.01 fast and that's too short to check all
+   # slaves.  So for each slave we sleep until the next interval.
+   my $get_next_interval = make_interval_iter($interval, $skew);
+
+   SLAVE:
    foreach my $thing ( @sths ) {
       my ( $dsn, $sth ) = @$thing;
-      my $host = $dsn->{h} || '';
-      if ( $dsn->{P} && $dsn->{P} ne '3306' ) {
-         $host .= ":$dsn->{P}";
-      }
-      $sth->execute();
-      my ( $delay, $hostname ) = $sth->fetchrow_array();
-      $host ||= $hostname || '';
-      MKDEBUG && _d('Found delay of', $delay, 'on', $host);
+      MKDEBUG && _d('Checking slave', $dp->as_string($dsn));
 
-      if ( $o->get('recurse') && $host ) {
+      my $next_interval = $get_next_interval->();
+      if ( time >= $next_interval ) {
+         do { $next_interval = $get_next_interval->() }
+            until $next_interval > time;
+         MKDEBUG && _d("Missed last interval; next interval:",
+            ts($next_interval));
+      }
+      sleep $next_interval - time;
+      MKDEBUG && _d('Woke up at', ts(time));
+      my ($delay, $hostname, $master_server_id) = $get_delay->($sth);
+
+      if ( $o->get('recurse') ) {
          # Must print not only the delay, but the server's hostname if
-         # available.
-         printf("%-20s %5d\n", $host, $delay) unless $o->get('quiet');
+         # available.  Prefer the hostname from the DSN, then the hostname
+         # from @@hostname, then fall back to Socket or default File.
+         my $host = $dsn->{h} || $hostname || $dsn->{S} || $dsn->{F} || '';
+         if ( $dsn->{P} && $dsn->{P} ne '3306' ) {
+            $host .= ":$dsn->{P}";
+         }
+         printf($format_host, $host, $delay, $master_server_id);
       }
       else {
          # Just print the delay.
-         printf("%d\n", $delay) unless $o->get('quiet');
+         printf($format_delay, $delay, $master_server_id);
       }
    }
+
    return;
+}
+
+# The interval iterator works by first returning the next whole second.
+# So if the current time (since epoch) is 5.123, then the next whole second
+# is 6.0, plus an optional skew. The next interval is 6.0 * the interval.
+# If the interval is 0.5s, then the next interval is 6.5, plus an optional
+# skew.  Therefore, we always start on a whole second and return when the
+# next interval is or should be.  The caller can then sleep(time-next_interval)
+# to wake up at that interval.  If the caller misses the next interval,
+# they just call the iterator until the next interval is later then the
+# current time. 
+sub make_interval_iter {
+   my ( $interval, $skew ) = @_;
+   die "I need an interval argument" unless defined $interval;
+   my ($s)     = gettimeofday();
+   my $start_s = $s + 1;
+   my $i       = 0;
+   my $get_next_interval = sub {
+      return $start_s + ($interval * $i++) + $skew;
+   };
+   return $get_next_interval;
 }
 
 sub disconnect {
@@ -2914,9 +3847,19 @@ mk-heartbeat measures replication lag on a MySQL or PostgreSQL server.  You can
 use it to update a master or monitor a replica.  If possible, MySQL connection
 options are read from your .my.cnf file.
 
- mk-heartbeat -D test --update -h master-server
- mk-heartbeat -D test --monitor -h slave-server
- mk-heartbeat -D test --monitor -h slave-server --dbi-driver Pg
+Start daemonized process to update test.heartbeat table on master:
+
+  mk-heartbeat -D test --update -h master-server --daemonize
+
+Monitor replication lag on slave:
+
+  mk-heartbeat -D test --monitor -h slave-server
+
+  mk-heartbeat -D test --monitor -h slave-server --dbi-driver Pg
+
+Check slave lag once and exit (using optional DSN to specify slave host):
+
+  mk-heartbeat -D test --check h=slave-server
 
 =head1 RISKS
 
@@ -2945,17 +3888,28 @@ system that measures delay by looking at actual replicated data.  This
 avoids reliance on the replication mechanism itself, which is unreliable.  (For
 example, C<SHOW SLAVE STATUS> on MySQL).
 
-The first part is an instance of mk-heartbeat that connects to the master and
-updates a timestamp ("heartbeat record") every second with L<"--update">.  The
-second part is another mk-heartbeat instance that connects to the slave,
-examines the replicated heartbeat with L<"--monitor"> or L<"--check">, and
-computes the difference from the current system time.  If the slave's
-replication is delayed or broken, the heartbeat will become stale.
+The first part is an L<"--update"> instance of mk-heartbeat that connects to
+a master and updates a timestamp ("heartbeat record") every L<"--interval">
+seconds.  Since the heartbeat table may contain records from multiple
+masters (see L<"MULTI-SLAVE HIERARCHY">), the server's ID (@@server_id) is
+used to identify records.
 
-You must either manually create a heartbeat table on the master and insert one
-row, or use L<"--create-table">.  See L<"--create-table"> for the proper
-heartbeat table structure.  The C<MEMORY> storage engine is suggested, but not
+The second part is a L<"--monitor"> or L<"--check"> instance of mk-heartbeat
+that connects to a slave, examines the replicated heartbeat record from its
+immediate master or the specified L<"--master-server-id">, and computes the
+difference from the current system time.  If replication between the slave and
+the master is delayed or broken, the computed difference will be greater than
+zero and potentially increase if L<"--monitor"> is specified.
+
+You must either manually create the heartbeat table on the master or use
+L<"--create-table">.  See L<"--create-table"> for the proper heartbeat
+table structure.  The C<MEMORY> storage engine is suggested, but not
 required of course, for MySQL.
+
+The heartbeat table must contain a heartbeat row.  By default, a heartbeat
+row is inserted if it doesn't exist.  This feature can be disabled with the
+L<"--[no]insert-heartbeat-row"> option in case the database user does not
+have INSERT privileges.
 
 mk-heartbeat depends only on the heartbeat record being replicated to the slave,
 so it works regardless of the replication mechanism (built-in replication, a
@@ -2965,18 +3919,56 @@ its master's master's master.  And if replication is stopped, it will continue
 to work and report (accurately!) that the slave is falling further and further
 behind the master.
 
-mk-heartbeat has a one-second resolution.  It depends on the clocks on the
-master and slave servers being closely synchronized via NTP.  L<"--update">
-checks happen on the edge of the second, and L<"--monitor"> checks happen
-halfway between seconds.  As long as the servers' clocks aren't skewed much
-and the replication events are propagating in less than half a second,
-mk-heartbeat will report zero seconds of delay.
+mk-heartbeat has a maximum resolution of 0.01 second.  The clocks on the
+master and slave servers must be closely synchronized via NTP.  By default,
+L<"--update"> checks happen on the edge of the second (e.g. 00:01) and
+L<"--monitor"> checks happen halfway between seconds (e.g. 00:01.5).
+As long as the servers' clocks are closely synchronized and replication
+events are propagating in less than half a second, mk-heartbeat will report
+zero seconds of delay.
 
 mk-heartbeat will try to reconnect if the connection has an error, but will
 not retry if it can't get a connection when it first starts.
 
 The L<"--dbi-driver"> option lets you use mk-heartbeat to monitor PostgreSQL
 as well.  It is reported to work well with Slony-1 replication.
+
+=head1 MULTI-SLAVE HIERARCHY
+
+If the replication hierarchy has multiple slaves which are masters of
+other slaves, like "master -> slave1 -> slave2", L<"--update"> instances
+can be ran on the slaves as well as the master.  The default heartbeat
+table (see L<"--create-table">) is keyed on the C<server_id> column, so
+each server will update the row where C<server_id=@@server_id>.
+
+For L<"--monitor"> and L<"--check">, if L<"--master-server-id"> is not
+specified, the tool tries to discover and use the slave's immediate master.
+If this fails, or if you want monitor lag from another master, then you can
+specify the L<"--master-server-id"> to use.
+
+For example, if the replication hierarchy is "master -> slave1 -> slave2"
+with corresponding server IDs 1, 2 and 3, you can:
+
+  mk-heartbeat --daemonize -D test --update -h master 
+  mk-heartbeat --daemonize -D test --update -h slave1
+
+Then check (or monitor) the replication delay from master to slave2:
+
+  mk-heartbeat -D test --master-server-id 1 --check slave2
+
+Or check the replication delay from slave1 to slave2:
+
+  mk-heartbeat -D test --master-server-id 2 --check slave2
+
+Stopping the L<"--update"> instance one slave1 will not affect the instance
+on master.
+
+=head1 MASTER AND SLAVE STATUS
+
+The default heartbeat table (see L<"--create-table">) has columns for saving
+information from C<SHOW MASTER STATUS> and C<SHOW SLAVE STATUS>.  These
+columns are optional.  If any are present, their corresponding information
+will be saved.
 
 =head1 OPTIONS
 
@@ -3006,7 +3998,10 @@ utf8 layer, and runs SET NAMES after connecting to MySQL.
 
 =item --check
 
-Check slave delay once and exit.
+Check slave delay once and exit.  If you also specify L<"--recurse">, the
+tool will try to discover slave's of the given slave and check and print
+their lag, too.  The hostname or IP and port for each slave is printed
+before its delay.  L<"--recurse"> only works with MySQL.
 
 =item --config
 
@@ -3022,17 +4017,41 @@ Create the heartbeat L<"--table"> if it does not exist.
 This option causes the table specified by L<"--database"> and L<"--table"> to
 be created with the following MAGIC_create_heartbeat table definition:
 
- CREATE TABLE heartbeat (
-   id int NOT NULL PRIMARY KEY,
-   ts datetime NOT NULL
- );
+  CREATE TABLE heartbeat (
+    ts                    varchar(26) NOT NULL,
+    server_id             int unsigned NOT NULL PRIMARY KEY,
+    file                  varchar(255) DEFAULT NULL,    -- SHOW MASTER STATUS
+    position              bigint unsigned DEFAULT NULL, -- SHOW MASTER STATUS
+    relay_master_log_file varchar(255) DEFAULT NULL,    -- SHOW SLAVE STATUS 
+    exec_master_log_pos   bigint unsigned DEFAULT NULL  -- SHOW SLAVE STATUS
+  );
 
 The heartbeat table requires at least one row.  If you manually create the
 heartbeat table, then you must insert a row by doing:
 
- INSERT INTO heartbeat (id) VALUES (1);
+  INSERT INTO heartbeat (ts, server_id) VALUES (NOW(), N);
 
-This is done automatically by --create-table.
+where C<N> is the server's ID; do not use @@server_id because it will replicate
+and slaves will insert their own server ID instead of the master's server ID.
+
+This is done automatically by L<"--create-table">.
+
+A legacy version of the heartbeat table is still supported:
+
+  CREATE TABLE heartbeat (
+    id int NOT NULL PRIMARY KEY,
+    ts datetime NOT NULL
+  );
+
+Legacy tables do not support L<"--update"> instances on each slave
+of a multi-slave hierarchy like "master -> slave1 -> slave2".
+To manually insert the one required row into a legacy table:
+
+  INSERT INTO heartbeat (id, ts) VALUES (1, NOW());
+
+The tool automatically detects if the heartbeat table is legacy.
+
+See also L<"MULTI-SLAVE HIERARCHY">.
 
 =item --daemonize
 
@@ -3090,21 +4109,58 @@ short form: -h; type: string
 
 Connect to host.
 
+=item --[no]insert-heartbeat-row
+
+default: yes
+
+Insert a heartbeat row in the L<"--table"> if one doesn't exist.
+
+The heartbeat L<"--table"> requires a heartbeat row, else there's nothing
+to L<"--update">, L<"--monitor">, or L<"--check">!  By default, the tool will
+insert a heartbeat row if one is not already present.  You can disable this
+feature by specifying C<--no-insert-heartbeat-row> in case the database user
+does not have INSERT privileges.
+
 =item --interval
 
-type: time; default: 1s
+type: float; default: 1.0
 
-Interval between updates and checks.
+How often to update or check the heartbeat L<"--table">.  Updates and checks
+begin on the first whole second then repeat every L<"--interval"> seconds
+for L<"--update"> and every L<"--interval"> plus L<"--skew"> seconds for
+L<"--monitor">.
 
-How often to check or update values.  The updates and checks will happen when
-the Unix time (seconds since epoch) is an even multiple of this value.  The
-suffix is similar to L<"--frames">.
+For example, if at 00:00.4 an L<"--update"> instance is started at 0.5 second
+intervals, the first update happens at 00:01.0, the next at 00:01.5, etc.
+If at 00:10.7 a L<"--monitor"> instance is started at 0.05 second intervals
+with the default 0.5 second L<"--skew">, then the first check happens at
+00:11.5 (00:11.0 + 0.5) which will be L<"--skew"> seconds after the last update
+which, because the instances are checking at synchronized intervals, happened
+at 00:11.0.
+
+The tool waits for and begins on the first whole second just to make the
+interval calculations simpler.  Therefore, the tool could wait up to 1 second
+before updating or checking.
+
+The minimum (fastest) interval is 0.01, and the maximum precision is two
+decimal places, so 0.015 will be rounded to 0.02.
+
+If a legacy heartbeat table (see L<"--create-table">) is used, then the
+maximum precision is 1s because the C<ts> column is type C<datetime>.
 
 =item --log
 
 type: string
 
 Print all output to this file when daemonized.
+
+=item --master-server-id
+
+type: string
+
+Calculate delay from this master server ID for L<"--monitor"> or L<"--check">.
+If not given, mk-heartbeat attempts to connect to the server's master and
+determine its server id.
 
 =item --monitor
 
@@ -3138,11 +4194,11 @@ short form: -P; type: int
 
 Port number to use for connection.
 
-=item --quiet
+=item --print-master-server-id
 
-short form: -q
-
-Suppresses normal output.
+Print the auto-detected or given L<"--master-server-id">.  If L<"--check">
+or L<"--monitor"> is specified, specifying this option will print the
+auto-detected or given L<"--master-server-id"> at the end of each line.
 
 =item --recurse
 
@@ -3182,7 +4238,7 @@ Use C<REPLACE> instead of C<UPDATE> for --update.
 When running in L<"--update"> mode, use C<REPLACE> instead of C<UPDATE> to set
 the heartbeat table's timestamp.  The C<REPLACE> statement is a MySQL extension
 to SQL.  This option is useful when you don't know whether the table contains
-any rows or not.
+any rows or not.  It must be used in conjunction with --update.
 
 =item --run-time
 
@@ -3205,9 +4261,9 @@ will be appended to SET and executed.
 
 =item --skew
 
-type: int; default: 500000
+type: float; default: 0.5
 
-How long to delay checks, in milliseconds.
+How long to delay checks.
 
 The default is to delay checks one half second.  Since the update happens as
 soon as possible after the beginning of the second on the master, this allows
@@ -3256,6 +4312,8 @@ type: string; default: heartbeat
 The table to use for the heartbeat.
 
 Don't specify database.table; use L<"--database"> to specify the database.
+
+See L<"--create-table">.
 
 =item --update
 
@@ -3362,7 +4420,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-heartbeat>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-heartbeat>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -3381,7 +4439,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -3410,6 +4468,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7588 $.
 
 =cut

@@ -8,7 +8,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -25,7 +25,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7477 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -2265,7 +2265,7 @@ standard output, store it in a database table, or both.  If neither
 L<"--print"> nor L<"--dest"> are given, then the deadlock information is
 printed by default.  If only L<"--dest"> is given, then the deadlock
 information is only stored.  If both options are given, then the deadlock
-informat is printed and stored.
+information is printed and stored.
 
 The source host can be specified using one of two methods.  The first method is
 to use at least one of the standard connection-related command line options:
@@ -2273,7 +2273,7 @@ L<"--defaults-file">, L<"--password">, L<"--host">, L<"--port">, L<"--socket">
 or L<"--user">.  These options only apply to the source host; they cannot be
 used to specify the destination host.
 
-The second method to specifiy the source host, or the optional destination host
+The second method to specify the source host, or the optional destination host
 using L<"--dest">, is a DSN.  A DSN is a special syntax that can be either just
 a hostname (like C<server.domain.com> or C<1.2.3.4>), or a
 C<key=value,key=value> string. Keys are a single letter:
@@ -2693,7 +2693,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-deadlock-logger>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-deadlock-logger>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -2711,7 +2711,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -2736,6 +2736,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7477 $.
 
 =cut

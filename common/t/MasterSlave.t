@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 54;
+use Test::More tests => 56;
 
 use MasterSlave;
 use DSNParser;
@@ -21,111 +21,6 @@ my $vp = new VersionParser();
 my $ms = new MasterSlave(VersionParser => $vp);
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-
-# slave_dbh is used near the end but for the most part we
-# use special sandboxes on ports 2900-2903.
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave_dbh  = $sb->get_dbh_for('slave1');
-
-# Create slave2 as slave of slave1.
-#diag(`/tmp/12347/stop 2> /dev/null`);
-#diag(`rm -rf /tmp/12347 2> /dev/null`);
-#diag(`$trunk/sandbox/make_sandbox 12347`);
-#diag(`/tmp/12347/use -e "change master to master_host='127.0.0.1', master_log_file='mysql-bin.000001', master_log_pos=0, master_user='msandbox', master_password='msandbox', master_port=12346"`);
-#diag(`/tmp/12347/use -e "start slave"`);
-# my $slave_2_dbh = $sb->get_dbh_for('slave2');
-#   or BAIL_OUT('Cannot connect to sandbox slave2');
-
-# Make slave2 slave of master.
-#diag(`$trunk/mk-slave-move/mk-slave-move --sibling-of-master h=127.1,P=12347`);
-
-#SKIP: {
-#   skip 'idea for future improvement', 3;
-#
-## Make sure we're messed up nicely.
-#my $rows = $master_dbh->selectall_arrayref('SHOW SLAVE HOSTS', {Slice => {}});
-#is_deeply(
-#   $rows,
-#   [
-#      {
-#         Server_id => '12346',
-#         Host      => '127.0.0.1',
-#         Port      => '12346',
-#         Rpl_recovery_rank => '0',
-#         Master_id => '12345',
-#      },
-#   ],
-#   'show slave hosts on master is precisely inaccurate'
-#);
-#
-#$rows = $slave_dbh->selectall_arrayref('SHOW SLAVE HOSTS', {Slice => {}});
-#is_deeply(
-#   $rows,
-#   [
-#      {
-#         Server_id => '12347',     # This is what's messed up because
-#         Host      => '127.0.0.1', # slave2 (12347) was made a slave
-#         Port      => '12347',     # of the master (12345), yet here
-#         Rpl_recovery_rank => '0', # it still shows as a slave of
-#         Master_id => '12346', # <-- slave1 (12346)
-#      },
-#      {
-#         Server_id => '12346',
-#         Host      => '127.0.0.1',
-#         Port      => '12346',
-#         Rpl_recovery_rank => '0',
-#         Master_id => '12345',
-#      },
-#   ],
-#   'show slave hosts on slave1 is precisely inaccurate'
-#);
-#
-#$rows = $slave_2_dbh->selectall_arrayref('SHOW SLAVE HOSTS', {Slice => {}});
-#is_deeply(
-#   $rows,
-#   [
-#      {
-#         Server_id => '12347',     
-#         Host      => '127.0.0.1', 
-#         Port      => '12347',     # Even slave2 itself is confused about
-#         Rpl_recovery_rank => '0', # which sever it is really a slave to:
-#         Master_id => '12346', # <-- slave1 (123456) wrong again
-#      },
-#      {
-#         Server_id => '12346',
-#         Host      => '127.0.0.1',
-#         Port      => '12346',
-#         Rpl_recovery_rank => '0',
-#         Master_id => '12345',
-#      },
-#   ],
-#   'show slave hosts on slave2 is precisely inaccurate'
-#);
-
-# The real picture is:
-#    12345
-#    +- 12346
-#    +- 12347
-# And here's what MySQL would have us wrongly see:
-#   12345
-#   +- 12346
-#      +- 12347
-#is_deeply(
-#   $ms->new_recurse_to_salves(),
-#   [
-#      '127.0.0.1:12345',
-#      [
-#         '127.0.0.1:12346',
-#         '127.0.0.1:12357',
-#      ],
-#   ],
-#   '_new_rts()'
-#);
-
-# Stop and remove slave2.
-#diag(`/tmp/12347/stop`);
-#diag(`rm -rf /tmp/12347`);
-#};
 
 # #############################################################################
 # First we need to setup a special replication sandbox environment apart from
@@ -144,6 +39,9 @@ my %port_for = (
    slave1 => 2902,
    slave2 => 2903,
 );
+foreach my $port ( values %port_for ) {
+   diag(`$trunk/sandbox/stop-sandbox remove $port >/dev/null`);
+}
 diag(`$trunk/sandbox/start-sandbox master 2900 >/dev/null`);
 diag(`$trunk/sandbox/start-sandbox slave 2903 2900 >/dev/null`);
 diag(`$trunk/sandbox/start-sandbox slave 2901 2900 >/dev/null`);
@@ -240,9 +138,9 @@ map { $ms->start_slave($_) } @slaves;
 
 my $res;
 $res = $ms->wait_for_master(
-   master_dbh => $dbh,
-   slave_dbh  => $slaves[0],
-   timeout    => 1
+   master_status => $ms->get_master_status($dbh),
+   slave_dbh     => $slaves[0],
+   timeout       => 1,
 );
 ok($res->{result} >= 0, 'Wait was successful');
 
@@ -251,9 +149,9 @@ $dbh->do('drop database if exists test'); # Any stmt will do
 diag(`(sleep 1; echo "start slave" | /tmp/$port_for{slave0}/use)&`);
 eval {
    $res = $ms->wait_for_master(
-      master_dbh => $dbh,
-      slave_dbh  => $slaves[0],
-      timeout    => 1,
+      master_status => $ms->get_master_status($dbh),
+      slave_dbh     => $slaves[0],
+      timeout       => 1,
    );
 };
 ok($res->{result}, 'Waited for some events');
@@ -352,7 +250,7 @@ ok(!$EVAL_ERROR, 'Detached slave');
 # 127.0.0.1:master
 # +- 127.0.0.1:slave1
 # +- 127.0.0.1:slave2
-is($ms->get_slave_status($slaves[0]), 0, 'slave 1 detached');
+is($ms->get_slave_status($slaves[0]), undef, 'slave 1 detached');
 is($ms->get_slave_status($slaves[1])->{master_port}, $port_for{master}, 'slave 2 port');
 is($ms->get_slave_status($slaves[2])->{master_port}, $port_for{master}, 'slave 3 port');
 
@@ -527,6 +425,8 @@ throws_ok(
 # #############################################################################
 # get_replication_filters()
 # #############################################################################
+my $master_dbh = $sb->get_dbh_for('master');
+my $slave_dbh  = $sb->get_dbh_for('slave1');
 SKIP: {
    skip "Cannot connect to sandbox master", 3 unless $master_dbh;
    skip "Cannot connect to sandbox slave", 3 unless $slave_dbh;
@@ -576,6 +476,17 @@ SKIP: {
    diag(`/tmp/12345/start >/dev/null`);
    diag(`/tmp/12346/start >/dev/null`);
 };
+
+is(
+   $ms->get_slave_lag($dbh),
+   undef,
+   "get_slave_lag() for master"
+);
+
+ok(
+   defined $ms->get_slave_lag($slaves[1]),
+   "get_slave_lag() for slave"
+);
 
 # #############################################################################
 # Done.

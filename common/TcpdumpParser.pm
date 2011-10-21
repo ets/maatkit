@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# TcpdumpParser package $Revision$
+# TcpdumpParser package $Revision: 7505 $
 # ###########################################################################
 package TcpdumpParser;
 
@@ -95,6 +95,8 @@ sub parse_event {
       my $packet = $self->_parse_packet($raw_packet);
       $packet->{pos_in_log} = $pos_in_log;
       $packet->{raw_packet} = $raw_packet;
+
+      $args{stats}->{events_read}++ if $args{stats};
 
       return $packet;
    }

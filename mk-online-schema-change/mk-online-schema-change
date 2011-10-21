@@ -4,7 +4,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -21,7 +21,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7593 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # OptionParser package 7102
@@ -1129,7 +1129,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# DSNParser package 6785
+# DSNParser package 7388
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/DSNParser.pm
@@ -1329,7 +1329,7 @@ sub get_dbh {
       RaiseError         => 1,
       PrintError         => 0,
       ShowErrorStatement => 1,
-      mysql_enable_utf8 => ($cxn_string =~ m/charset=utf8/ ? 1 : 0),
+      mysql_enable_utf8 => ($cxn_string =~ m/charset=utf8/i ? 1 : 0),
    };
    @{$defaults}{ keys %$opts } = values %$opts;
 
@@ -3787,7 +3787,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# OSCCaptureSync package 7308
+# OSCCaptureSync package 7463
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/OSCCaptureSync.pm
@@ -3818,11 +3818,11 @@ sub new {
 
 sub capture {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh msg old_table new_table columns chunk_column);
+   my @required_args = qw(msg dbh db tbl tmp_tbl columns chunk_column);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $msg) = @args{@required_args};
+   my ($msg, $dbh) = @args{@required_args};
 
    my @triggers = $self->_make_triggers(%args);
    foreach my $sql ( @triggers ) {
@@ -3835,12 +3835,14 @@ sub capture {
 
 sub _make_triggers {
    my ( $self, %args ) = @_;
-   my @required_args = qw(old_table new_table chunk_column columns);
+   my @required_args = qw(db tbl tmp_tbl chunk_column columns);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($old_table, $new_table, $chunk_column) = @args{@required_args};
+   my ($db, $tbl, $tmp_tbl, $chunk_column) = @args{@required_args};
 
+   my $old_table  = "`$db`.`$tbl`";
+   my $new_table  = "`$db`.`$tmp_tbl`";
    my $new_values = join(', ', map { "NEW.$_" } @{$args{columns}});
    my $columns    = join(', ', @{$args{columns}});
 
@@ -3903,7 +3905,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsInsertSelect package 7349
+# CopyRowsInsertSelect package 7464
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsInsertSelect.pm
@@ -3934,11 +3936,11 @@ sub new {
 
 sub copy {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh msg old_table new_table chunks columns);
+   my @required_args = qw(dbh msg from_table to_table chunks columns);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $msg, $old_table, $new_table, $chunks) = @args{@required_args};
+   my ($dbh, $msg, $from_table, $to_table, $chunks) = @args{@required_args};
    my $pr       = $args{Progress};
    my $sleep    = $args{sleep};
    my $columns  = join(', ', @{$args{columns}});
@@ -3950,8 +3952,8 @@ sub copy {
          next;
       }
 
-      my $sql = "INSERT IGNORE INTO $new_table ($columns) "
-              . "SELECT $columns FROM $old_table "
+      my $sql = "INSERT IGNORE INTO $to_table ($columns) "
+              . "SELECT $columns FROM $from_table "
               . "WHERE ($chunks->[$chunkno])"
               . ($args{where}        ? " AND ($args{where})"  : "")
               . ($args{engine_flags} ? " $args{engine_flags}" : "");
@@ -3960,6 +3962,7 @@ sub copy {
          $msg->($sql);
       }
       else {
+         MKDEBUG && _d($dbh, $sql);
          my $error;
          $self->{Retry}->retry(
             wait  => sub { sleep 1; },
@@ -4014,7 +4017,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Retry package 7096
+# Retry package 7465
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Retry.pm
@@ -4065,7 +4068,7 @@ sub retry {
 
       if ( $EVAL_ERROR ) {
          MKDEBUG && _d("Try code died:", $EVAL_ERROR);
-         return unless $args{retry_on_die};
+         die $EVAL_ERROR unless $args{retry_on_die};
       }
 
       if ( $tryno < $tries ) {
@@ -4108,7 +4111,7 @@ sub _d {
 package mk_online_schema_change;
 
 use English qw(-no_match_vars);
-use Time::HiRes qw(usleep);
+use Time::HiRes qw(sleep);
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
@@ -4138,36 +4141,41 @@ sub main {
    my $dp = $o->DSNParser();
    $dp->prop('set-vars', $o->get('set-vars'));
 
-   $quiet = $o->get('quiet');
+   $quiet = $o->get('quiet');  # for msg()
 
-   # Figure out which cmd line args are files (if any) and which is
-   # the DSN (if any).
-   my $dsn;
-   my @files;
-   foreach my $arg ( @ARGV ) {
-      if ( -f $arg ) {
-         push @files, $arg;
+   my ($dsn, $db, $tbl);
+   $dsn = shift @ARGV;
+   if ( !$dsn ) {
+      $o->save_error('A DSN with a t part must be specified');
+   }
+   else {
+      $dsn = $dp->parse($dsn, $dp->parse_options($o));
+      if ( !$dsn->{t} ) {
+         $o->save_error('The DSN must specify a t (table) part');
       }
       else {
-         $o->save_error('Specify only 1 DSN on the command line') if $dsn;
-         $dsn = $arg;
+         ($db, $tbl) = $q->split_unquote($dsn->{t} || "", $dsn->{D} || "");
       }
    }
-   $dsn = $dp->parse($dsn, $dp->parse_options($o));
-   my ($db, $old_tbl) = $q->split_unquote($dsn->{t} || "", $dsn->{D} || "");
+
+   my $rename_fk_method = lc $o->get('update-foreign-keys-method');
+   if ( ($rename_fk_method || '') eq 'drop_old_table' ) {
+      $o->set('rename-tables',  0);
+      $o->set('drop-old-table', 0),
+   }
 
    if ( !$o->get('help') ) {
+      if ( @ARGV ) {
+         $o->save_error('Specify only one DSN on the command line');
+      }
+
       if ( !$db ) {
          $o->save_error("No database was specified in the DSN or by "
             . "--database (-D)");
       }
 
-      if ( !$dsn->{t} ) {
-         $o->save_error('The DSN must specify a t (table) part');
-      }
-
-      if ( $old_tbl && $old_tbl eq ($o->get('new-table') || "") ) {
-         $o->save_error("--new-table cannot be the same as the old table");
+      if ( $tbl && $tbl eq ($o->get('tmp-table') || "") ) {
+         $o->save_error("--tmp-table cannot be the same as the table");
       }
 
       if ( $o->get('progress') ) {
@@ -4176,6 +4184,16 @@ sub main {
             chomp $EVAL_ERROR;
             $o->save_error("--progress $EVAL_ERROR");
          }
+      }
+
+      if ( $o->get('child-tables') && !$o->get('update-foreign-keys-method') ) {
+         $o->save_error("--child-tables requires --update-foreign-keys-method");
+      }
+
+      if ( $rename_fk_method
+           && $rename_fk_method ne 'rebuild_constraints'
+           && $rename_fk_method ne 'drop_old_table' ) {
+         $o->save_error("Invalid --update-foreign-keys-method value");
       }
    }
 
@@ -4193,17 +4211,14 @@ sub main {
       OptionParser => $o,
       AutoCommit   => 1,
    );
+   msg("USE `$db`");
+   $dbh->do("USE `$db`");
 
    # ########################################################################
    # Daemonize only after (potentially) asking for passwords for --ask-pass.
    # ########################################################################
    my $daemon;
-   if ( $o->get('daemonize') ) {
-      $daemon = new Daemon(o=>$o);
-      $daemon->daemonize();
-      MKDEBUG && _d('I am a daemon now');
-   }
-   elsif ( $o->get('pid') ) {
+   if ( $o->get('pid') ) {
       # We're not daemoninzing, it just handles PID stuff.
       $daemon = new Daemon(o=>$o);
       $daemon->make_PID_file();
@@ -4212,21 +4227,15 @@ sub main {
    # ########################################################################
    # Setup/init some vars.
    # ########################################################################
-   my $new_tbl = $o->get('new-table') || "__new_$old_tbl";
+   my $tmp_tbl = $o->get('tmp-table') || "__tmp_$tbl";
+   my $old_tbl = "__old_$tbl"; # what tbl becomes after swapped with tmp tbl
    my %tables  = (
-      db                => $db,
-      old_table         => $q->join_quote($db, $old_tbl),
-      new_table         => $q->join_quote($db, $new_tbl),
-      old_table_renamed => $q->join_quote($db, "__old_$old_tbl"),
+      db      => $db,
+      tbl     => $tbl,
+      tmp_tbl => $tmp_tbl,
+      old_tbl => $old_tbl,
    );
-   msg("Old table: $tables{old_table}");
-   msg("New table: $tables{new_table}");
-
-   # TODO: this crashes if the old table doesn't exist because this is
-   # done before checks() because checks() wants this.  Need to fix this
-   # circular dependency.
-   $tables{old_tbl_struct} = $tp->parse(
-      $du->get_create_table($dbh, $q, $db, $old_tbl));
+   msg("Alter table $tbl using temporary table $tmp_tbl");
 
    my %common_modules = (
       OptionParser  => $o,
@@ -4250,18 +4259,16 @@ sub main {
       dbh   => $dbh,
       msg   => \&msg,  # so plugin can talk back to user
       print => $o->get('print'),
-      where => $o->get('where'),
       %tables,
       %common_modules,
    );
 
    if ( my $sleep_time = $o->get('sleep') ) {
       MKDEBUG && _d("Sleep time:", $sleep_time);
-      $sleep_time *= 1_000_000;  # convert to microseconds
       $plugin_args{sleep} = sub {
          my ( $chunkno ) = @_;
          MKDEBUG && _d("Sleeping after chunk", $chunkno);
-         usleep($sleep_time);
+         sleep($sleep_time);
       };
    }
 
@@ -4280,16 +4287,61 @@ sub main {
    }
 
    # ########################################################################
-   # Pre-checks.
+   # Check that table can be altered.
    # ########################################################################
-   my $chunk = checks(%plugin_args);
-   $plugin_args{chunk_column} = $chunk->{column};
-   $plugin_args{chunk_index}  = $chunk->{index};
+   my %tbl_info;
+   eval {
+      %tbl_info = check_tables(%plugin_args);
+   };
+   if ( $EVAL_ERROR ) {
+      chomp $EVAL_ERROR;
+      msg("Table $tbl cannot be altered: $EVAL_ERROR");
+      return 1;
+   }
 
+   @plugin_args{keys %tbl_info} = values %tbl_info;
+   msg("Table $tbl can be altered");
+   msg("Chunk column $plugin_args{chunk_column}, index $plugin_args{chunk_index}");
+
+   if ( $o->get('check-tables-and-exit') ) {
+      msg("$PROGRAM_NAME ending for --check-tables-and-exit");
+      return 0;
+   }
+
+   # #####################################################################
+   # Chunk the table.  If the checks pass, then this shouldn't fail.
+   # #####################################################################
+   my %range_stats = $chunker->get_range_statistics(
+      dbh        => $dbh,
+      db         => $db,
+      tbl        => $tbl,
+      chunk_col  => $plugin_args{chunk_column},
+      tbl_struct => $plugin_args{tbl_struct},
+   );
+   my @chunks = $chunker->calculate_chunks(
+      dbh        => $dbh,
+      db         => $db,
+      tbl        => $tbl,
+      chunk_col  => $plugin_args{chunk_column},
+      tbl_struct => $plugin_args{tbl_struct},
+      chunk_size => $o->get('chunk-size'),
+      %range_stats,
+   );
+   $plugin_args{chunks}   = \@chunks;
+   $plugin_args{Progress} = new Progress(
+      jobsize => scalar @chunks,
+      spec    => $o->get('progress'),
+      name    => "Copying rows",
+   );
+   msg("Chunked table $tbl into " . scalar @chunks . " chunks");
+
+   # #####################################################################
+   # Get child tables if necessary.
+   # #####################################################################
    my @child_tables;
    if ( my $child_tables = $o->get('child-tables') ) {
-      if ( lc $child_tables eq 'auto-detect' ) {
-         msg("Auto-detecting child tables of $tables{old_table}");
+      if ( lc $child_tables eq 'auto_detect' ) {
+         msg("Auto-detecting child tables of $tbl");
          @child_tables = get_child_tables(%plugin_args);
          msg("Child tables of $tables{old_table}: "
             .  (@child_tables ? join(', ', @child_tables) : "(none)"));
@@ -4300,53 +4352,23 @@ sub main {
       }
    }
 
-   if ( $o->get('exit-after-checks') ) {
-      msg("$PROGRAM_NAME ending for --exit-after-checks; all checks passed");
-      return 0;
-   }
-
    # #####################################################################
-   # Chunk the table.  If the checks pass, then this shouldn't fail.
+   # Do the online alter.
    # #####################################################################
-   my %range_stats = $chunker->get_range_statistics(
-      dbh        => $dbh,
-      db         => $db,
-      tbl        => $old_tbl,
-      chunk_col  => $chunk->{column},
-      tbl_struct => $tables{old_tbl_struct},
-      where      => $o->get('where'),
-   );
-   my @chunks = $chunker->calculate_chunks(
-      dbh        => $dbh,
-      db         => $db,
-      tbl        => $old_tbl,
-      chunk_col  => $chunk->{column},
-      tbl_struct => $tables{old_tbl_struct},
-      where      => $o->get('where'),
-      chunk_size => $o->get('chunk-size'),
-      %range_stats,
-   );
-   $plugin_args{chunks}   = \@chunks;
-   $plugin_args{Progress} = new Progress(
-      jobsize => scalar @chunks,
-      spec    => $o->get('progress'),
-      name    => "Copying rows",
-   );
-   msg("$tables{old_table} chunked into " . scalar @chunks . " chunks");
-
+   msg("Starting online schema change");
    eval {
       my $sql = "";
       
       # #####################################################################
       # Create and alter the new table.
       # #####################################################################
-      if ( $o->get('create-new-table') ) {
-         $sql = "CREATE TABLE $tables{new_table} LIKE $tables{old_table}";
+      if ( $o->get('create-tmp-table') ) {
+         $sql = "CREATE TABLE `$db`.`$tmp_tbl` LIKE `$db`.`$tbl`";
          msg($sql);
          $dbh->do($sql) unless $o->get('print');
       }
 
-      if ( my $alter = $o->get('alter-new-table') ) {
+      if ( my $alter = $o->get('alter') ) {
          my @stmts;
          if ( -f $alter && -r $alter ) {
             msg("Reading ALTER TABLE statements from file $alter");
@@ -4359,14 +4381,14 @@ sub main {
          }
 
          foreach my $stmt ( @stmts ) {
-            $sql = "ALTER TABLE $tables{new_table} $stmt";
+            $sql = "ALTER TABLE `$db`.`$tmp_tbl` $stmt";
             msg($sql);
             $dbh->do($sql) unless $o->get('print');
          } 
       }
 
       # #####################################################################
-      # Determine what columns the two tables 
+      # Determine what columns the two tables have in common.
       # #####################################################################
       my @columns;
       # If --print is in effect, then chances are the new table wasn't
@@ -4374,18 +4396,18 @@ sub main {
       # TODO: check if the new table exists because user might have created
       # it manually.
       if ( !$o->get('print') ) {
-         $tables{new_tbl_struct} = $tp->parse(
-               $du->get_create_table($dbh, $q, $db, $new_tbl));
+         my $tmp_tbl_struct = $tp->parse(
+               $du->get_create_table($dbh, $q, $db, $tmp_tbl));
 
          @columns = intersection([
-            $tables{old_tbl_struct}->{is_col},
-            $tables{new_tbl_struct}->{is_col},
+            $plugin_args{tbl_struct}->{is_col},
+            $tmp_tbl_struct->{is_col},
          ]);
 
          # Order columns according to new table because people like/expect
          # to see things in a certain order (this has been an issue before).
          # This just matters to us; does't make a difference to MySQL.
-         my $col_posn = $tables{new_tbl_struct}->{col_posn};
+         my $col_posn = $plugin_args{tbl_struct}->{col_posn};
          @columns = sort { $col_posn->{$a} <=> $col_posn->{$b} } @columns;
          msg("Shared columns: " . join(', ', @columns));
       }
@@ -4401,7 +4423,11 @@ sub main {
       # Copy rows from new table to old table.
       # #####################################################################
       msg("Calling " . (ref $copy_rows) . "::copy()");
-      $copy_rows->copy(%plugin_args);
+      $copy_rows->copy(
+         from_table => $q->quote($db, $tbl),
+         to_table   => $q->quote($db, $tmp_tbl),
+         %plugin_args
+      );
 
       # #####################################################################
       # Sync tables.
@@ -4413,23 +4439,41 @@ sub main {
       # Rename tables.
       # #####################################################################
       if ( $o->get('rename-tables') ) {
-         msg("Renaming the tables");
-         $sql = "RENAME TABLE $tables{old_table} TO $tables{old_table_renamed},"
-              . " $tables{new_table} TO $tables{old_table}";
+         msg("Renaming tables");
+         $sql = "RENAME TABLE `$db`.`$tbl` TO `$db`.`$old_tbl`,"
+              . " `$db`.`$tmp_tbl` TO `$db`.`$tbl`";
          msg($sql);
          $dbh->do($sql) unless $o->get('print');
-         msg("Old table renamed to $tables{old_table_renamed}");
+         msg("Original table $tbl renamed to $old_tbl");
       }
 
       # #####################################################################
       # Update foreign key constraints if there are child tables.
       # #####################################################################
       if ( @child_tables ) {
-         msg("Updating foreign key constraints in child tables");
-         update_foreign_key_constraints(
-            child_tables => \@child_tables,
-            %plugin_args,
-         );
+         msg("Renaming foreign key constraints in child table");
+         if ( $rename_fk_method eq 'rebuild_constraints' ) { 
+            update_foreign_key_constraints(
+               child_tables => \@child_tables,
+               %plugin_args,
+            );
+         }
+         elsif ( $rename_fk_method eq 'drop_old_table' ) {
+            $sql = "SET foreign_key_checks=0";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+            
+            $sql = "DROP TABLE `$db`.`$tbl`";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+
+            $sql = "RENAME TABLE `$db`.`$tmp_tbl` TO `$db`.`$tbl`";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+         }
+         else {
+            die "Invalid --update-foreign-keys-method value: $rename_fk_method";
+         }
       }
 
       # #####################################################################
@@ -4442,7 +4486,7 @@ sub main {
       $capture_sync->cleanup(%plugin_args);
 
       if ( $o->get('rename-tables') &&  $o->get('drop-old-table') ) {
-         $sql = "DROP TABLE $tables{old_table_renamed}";
+         $sql = "DROP TABLE `$db`.`$old_tbl`";
          msg($sql);
          $dbh->do($sql) unless $o->get('print');
       }
@@ -4461,88 +4505,95 @@ sub main {
 # ############################################################################
 # Subroutines.
 # ############################################################################
-sub checks {
+sub check_tables {
    my ( %args ) = @_;
-   my @required_args = qw(dbh old_table old_table_renamed old_tbl_struct new_table VersionParser Quoter TableParser OptionParser TableChunker);
+   my @required_args = qw(dbh db tbl tmp_tbl old_tbl VersionParser Quoter TableParser OptionParser TableChunker MySQLDump);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh)                   = $args{dbh};
-   my ($old_table, $new_table) = @args{qw(old_table new_table)};
-   my ($vp, $q, $tp, $o)       = @args{qw(VersionParser Quoter TableParser OptionParser)};
+   my ($dbh, $db, $tbl, $tmp_tbl, $old_tbl, $o, $tp)
+      = @args{qw(dbh db tbl tmp_tbl old_tbl OptionParser TableParser)};
 
-   my ($db, $old_tbl)   = $q->split_unquote($old_table);
-   my (undef, $new_tbl) = $q->split_unquote($new_table);
-
+   msg("Checking if table $tbl can be altered");
+   my %tbl_info;
    my $sql = "";
 
+   # ########################################################################
+   # Check MySQL.
+   # ########################################################################   
    # Although triggers were introduced in 5.0.2, "Prior to MySQL 5.0.10,
    # triggers cannot contain direct references to tables by name."
-   if ( !$vp->version_ge($dbh, '5.0.10') ) {
-      die "This tool requires MySQL 5.0.10 or newer";
+   if ( !$args{VersionParser}->version_ge($dbh, '5.0.10') ) {
+      die "This tool requires MySQL 5.0.10 or newer\n";
    }
 
-   # The old table must exist of course.
-   if ( !$tp->check_table(dbh=>$dbh, db=>$db, tbl=>$old_tbl) ) {
-      die "The old table does not exist.  Create it an try again.\n";
+   # ########################################################################
+   # Check the (original) table.
+   # ########################################################################
+   # The table must exist of course.
+   if ( !$tp->check_table(dbh=>$dbh, db=>$db, tbl=>$tbl) ) {
+      die "Table $db.$tbl does not exist\n";
    }
 
-   if ( $o->get('rename-tables') ) {
-      my (undef,$old_tbl_renamed) = $q->split_unquote($args{old_table_renamed});
-      if ( $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$old_tbl_renamed) ) {
-         die "The old renamed table $args{old_table_renamed} already exists, "
-            . "probably from a previous run.  See --drop-old-table for more "
-            . "information.\n";
-      }
-   }
-
-   # The new table should not exist if we're supposed to create it.
-   # Else, if user specifies --no-create-new-table, they should ensure
-   # that it exists.
-   if ( $o->get('create-new-table')
-        && $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$new_tbl) ) {
-      die "The new table already exists.  Drop it and try again.\n";
-   }
-
-   # There cannot be any triggers on the old table.
-   $sql = "SHOW TRIGGERS FROM `$db` LIKE '$old_tbl'";
+   # There cannot be any triggers on the table.
+   $sql = "SHOW TRIGGERS FROM `$db` LIKE '$tbl'";
    msg($sql);
    my $triggers = $dbh->selectall_arrayref($sql);
    if ( $triggers && @$triggers ) {
-      die "The old table has triggers.  This tool needs to create its own "
-         . "triggers, so it requires that the old table does not already "
-         . "have any triggers.\n";
+      die "Table $db.$tbl has triggers.  This tool needs to create "
+         . "its own triggers, so the table cannot already have triggers.\n";
    }
 
    # For now, we require that the old table has an exact-chunkable
    # column (i.e. unique single-column).
+   $tbl_info{tbl_struct} = $tp->parse(
+      $args{MySQLDump}->get_create_table($dbh, $args{Quoter}, $db, $tbl));
    my ($exact, @chunkable_cols) = $args{TableChunker}->find_chunk_columns(
-      tbl_struct => $args{old_tbl_struct},
+      tbl_struct => $tbl_info{tbl_struct},
       exact      => 1,
    );
    if ( !$exact || !@chunkable_cols ) {
-      die "The old table does not have a unique, single-column index";
+      die "Table $db.$tbl cannot be chunked because it does not have "
+         . "a unique, single-column index\n";
+   }
+   $tbl_info{chunk_column} = $chunkable_cols[0]->{column};
+   $tbl_info{chunk_index}  = $chunkable_cols[0]->{index};
+
+   # ########################################################################
+   # Check the tmp table.
+   # ########################################################################   
+   # The tmp table should not exist if we're supposed to create it.
+   # Else, if user specifies --no-create-tmp-table, they should ensure
+   # that it exists.
+   if ( $o->get('create-tmp-table')
+        && $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$tmp_tbl) ) {
+      die "Temporary table $db.$tmp_tbl exists which will prevent "
+         . "--create-tmp-table from creating the temporary table.\n";
    }
 
-   msg("Old table chunk column/index: $chunkable_cols[0]->{column}/"
-      . "$chunkable_cols[0]->{index}");
+   # ########################################################################
+   # Check the old table.
+   # ########################################################################   
+   # If we're going to rename the tables, which we do by default, then
+   # the old table cannot already exist.
+   if ( $o->get('rename-tables')
+        && $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$old_tbl) ) {
+      die "Table $db.$old_tbl exists which will prevent $db.$tbl "
+         . "from being renamed to it.  Table $db.$old_tbl could be from "
+         . "a previous run that failed.  See --drop-old-table for more "
+         . "information.\n";
+   }
 
-   $chunkable_cols[0]->{column_ddl}
-      = $args{old_tbl_struct}->{defs}->{$chunkable_cols[0]->{column}};
-   $chunkable_cols[0]->{column_ddl} =~ s/AUTO_INCREMENT//i;
-
-   return $chunkable_cols[0];
+   return %tbl_info;
 }
 
 sub get_child_tables {
    my ( %args ) = @_;
-   my @required_args = qw(dbh old_table Quoter);
+   my @required_args = qw(dbh db tbl Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $old_table, $q) = @args{@required_args};
-
-   my ($db, $tbl) = $q->split_unquote($old_table);
+   my ($dbh, $db, $tbl, $q) = @args{@required_args};
 
    my $sql = "SELECT table_name "
            . "FROM information_schema.key_column_usage "
@@ -4553,7 +4604,7 @@ sub get_child_tables {
       $child_tables = $dbh->selectall_arrayref($sql);
    };
    if ( $EVAL_ERROR ) {
-      die "Error executing query to check $old_table for child tables.\n\n"
+      die "Error executing query to check $tbl for child tables.\n\n"
          . "Query: $sql\n\n"
          . "Error: $EVAL_ERROR"
    }
@@ -4564,16 +4615,14 @@ sub get_child_tables {
 
 sub update_foreign_key_constraints {
    my ( %args ) = @_;
-   my @required_args = qw(msg dbh db child_tables old_table old_table_renamed Quoter);
+   my @required_args = qw(msg dbh db tbl old_tbl child_tables Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($msg, $dbh, $db, $child_tables, $old_table, $old_table_renamed, $q)
+   my ($msg, $dbh, $db, $tbl, $old_tbl, $child_tables, $q)
       = @args{@required_args};
 
-   my (undef, $tbl)     = $q->split_unquote($old_table);
-   my (undef, $old_tbl) = $q->split_unquote($old_table_renamed);
-   my $constraint       = qr/^\s+(CONSTRAINT.+?REFERENCES `$old_tbl`.+)$/mo;
+   my $constraint = qr/^\s+(CONSTRAINT.+?REFERENCES `$old_tbl`.+)$/mo;
 
    CHILD_TABLE:
    foreach my $child_table ( @$child_tables ) {
@@ -4591,8 +4640,8 @@ sub update_foreign_key_constraints {
 
       my @constraints = $table_def =~ m/$constraint/g;
       if ( !@constraints ) {
-         warn "Child table $child_table does not have any foreign key "
-            . "constraints referencing $old_table_renamed";
+         warn "Child table `$child_table` does not have any foreign key "
+            . "constraints referencing $old_tbl";
          next CHILD_TABLE;
       }
 
@@ -4670,27 +4719,35 @@ if ( !caller ) { exit main(@ARGV); }
 
 =head1 NAME
 
-mk-online-schema-change - Perform online, non-blocking schema changes to tables.
+mk-online-schema-change - Perform online, non-blocking table schema changes.
 
 =head1 SYNOPSIS
 
-Usage: mk-online-schema-change [OPTION...] DSN [FILE...]
+Usage: mk-online-schema-change [OPTION...] DSN
 
-mk-online-schema-change performs online, non-blocking schema changes to tables.
+mk-online-schema-change performs online, non-blocking schema changes to a table.
 The table to change must be specified in the DSN C<t> part, like C<t=my_table>.
 The table can be database-qualified, or the database can be specified with the
 L<"--database"> option.
 
 Change the table's engine to InnoDB:
 
-  mk-online-schema-change             \
-    h=127.1,t=db.tbl                  \
-    --alter-new-table "ENGINE=InnoDB" \
-    --drop-old-table
+  mk-online-schema-change   \
+    h=127.1,t=db.tbl        \
+    --alter "ENGINE=InnoDB" \
+    --drop-tmp-table
 
-Rebuild but do not alter the table, and keep the old (original) table:
+Rebuild but do not alter the table, and keep the temporary table:
 
-  mk-online-schema-change h=127.1,t=db.tbl
+  mk-online-schema-change h=127.1,t=tbl --database db
+
+Add column to parent table, update child table foreign key constraints:
+
+  mk-online-schema-change          \
+    h=127.1,D=db,t=parent          \
+    --alter "ADD COLUMN (foo INT)" \
+    --child-tables child1,child2   \
+    --update-foreign-keys-method drop_tmp_table
 
 =head1 RISKS
 
@@ -4699,8 +4756,12 @@ whether known or unknown, of using this tool.  The two main categories of risks
 are those created by the nature of the tool (e.g. read-only tools vs. read-write
 tools) and those created by bugs.
 
-Tables with foreign key constraints are not currently supported/tested.
+mk-online-schema-change reads, writes, alters and drops tables.  Although
+it is tested, do not use it in production until you have thoroughly tested it
+in your environment!
+
 This tool has not been tested with replication; it may break replication.
+See L<"REPLICATION">.
 
 At the time of this release there are no known bugs that pose a serious risk.
 
@@ -4714,19 +4775,38 @@ See also L<"BUGS"> for more information on filing bugs and getting help.
 =head1 DESCRIPTION
 
 mk-online-schema-change performs online, non-blocking schema changes to tables.
-Only one table can be altered at a time because triggers are used to track
-and synchronize changes between the old (original) table and the new table
-that will take its place once it has been altered.  The table to modify is
-specified in DSN C<t> part as show in the L<"SYNOPSIS"> examples.  The old
-and new tables must be contained in the same database, on the same server.
-By default, the new table is renamed to the old table using C<RENAME TABLE>.
+Only one table can be altered at a time because triggers are used to capture
+and synchronize changes between the table and the temporary table that
+will take its place once it has been altered.  Since triggers are used, this
+tool only works with MySQL 5.0.2 and newer.
 
-For example, if you alter table C<foo>, the tool by default will create
-table C<__new_foo> in the same database.  C<foo> is the "old" table and
-C<__new_foo> is the "new" table.  After the new table is altered and
-synchronized with the old table, the two are swapped: C<foo> is renamed
-to C<__old_foo> by default, and C<__new_foo> becomes C<foo>.  C<__old_foo>
-is not dropped unless L<"--drop-old-table"> is specified.
+The table to alter is specified by the DSN C<t> part on the command line,
+as shown in the L<"SYNOPSIS"> examples.  A database must also be specified
+either by the DSN C<D> part or by the L<"--database"> option.
+
+If you're using replication, read L<"REPLICATION"> or else you may break
+replication.  Performing an online schema change in a replication environment
+requires extra planning and care.
+
+In brief, this tool works by creating a temporary table which is a copy of
+the original table (the one being altered).  (The temporary table is not
+created like C<CREATE TEMPORARY TABLE>; we call it temporary because it
+ultimately replaces the original table.)  The temporary table is altered,
+then triggers are defined on the original table to capture changes made on
+it and apply them to the temporary table.  This keeps the two tables in
+sync.  Then all rows are copied from the original table to the temporary
+table; this part can take awhile.  When done copying rows, the two tables
+are swapped by using C<RENAME TABLE>.  At this point there are two copies
+of the table: the old table which used to be the original table, and the
+new table which used to be the temporary table but now has the same name
+as the original table.  If L<"--drop-old-table"> is specified, then the
+old table is dropped.
+
+For example, if you alter table C<foo>, the tool will create table
+C<__tmp_foo>, alter it, define triggers on C<foo>, and then copy rows
+from C<foo> to C<__tmp_foo>.  Once all rows are copied, C<foo> is renamed
+to C<__old_foo> and C<__tmp_foo> is renamed to C<foo>.
+If L<"--drop-old-table"> is specified, then C<__old_foo> is dropped.
 
 The tool preforms the following steps:
 
@@ -4743,30 +4823,35 @@ two steps, the tool will die.
 
 Most of the tool's work is done in the third step which has 6 phases:
 
-  1. Create and alter the new table
-  2. Capture changes from the old table to the new table
-  3. Copy rows from the old table to the new table
-  4. Synchronize the old and new tables
-  5. Rename the new table to the old table
+  1. Create and alter temporary table
+  2. Capture changes from the table to the temporary table
+  3. Copy rows from the table to the temporary table
+  4. Synchronize the table and the temporary table
+  5. Swap/rename the table and the temporary table
   6. Cleanup
 
 There are several ways to accomplish an online schema change which differ
 in how changes are captured and synced (phases 2 and 4), how rows are copied
 (phase 3), and how the tables are swapped (phase 5).  Currently, this tool
-employs sychronous triggers (Shlomi's method), C<INSERT-SELECT>, and
+employs synchronous triggers (Shlomi's method), C<INSERT-SELECT>, and
 C<RENAME TABLE> respectively for these phases.
 
 Here are options related to each phase:
 
-  1. L<"--[no]create-new-table">, C<"--alter-new-table">, L<"--new-table">
+  1. --[no]create-tmp-table, --alter, --tmp-table
   2. (none)
-  3. L<"--chunk-size">, L<"--sleep">
+  3. --chunk-size, --sleep
   4. (none)
-  5. L<"--[no]rename-tables">
-  6. L<"--drop-old-table">
+  5. --[no]rename-tables
+  6. --drop-old-table
 
-Options L<"--exit-after-checks"> and L<"--print"> are helpful to see what
+Options L<"--check-tables-and-exit"> and L<"--print"> are helpful to see what
 the tool might do before actually doing it.
+
+=head1 REPLICATION
+
+In brief: update slaves first if columns are added or removed.  Certain
+ALTER changes like ENGINE may not affect replication.
 
 =head1 OUTPUT
 
@@ -4780,28 +4865,30 @@ L<"SYNOPSIS"> and usage information for details.
 
 =over
 
-=item --alter-new-table
+=item --alter
 
 type: string
 
-Semicolon-separated list of C<ALTER TABLE> statments to apply to the new table.
+Semicolon-separated list of C<ALTER TABLE> statements to apply to the new table.
 The statements should not contain C<ALTER TABLE>, just what would follow that
 clause.  For example, if you want to C<ALTER TABLE ENGINE=InnoDB>, the value
 would be C<ENGINE=InnoDB>.
 
 The value can also be a filename which contains statements, one per line
-with no blank lines.  Each statement will be applied in the order it appears
-in the file.
+with no blank lines and no trailing semicolons.  Each statement will be
+applied in the order it appears in the file.
 
 =item --ask-pass
 
 Prompt for a password when connecting to MySQL.
 
-=item --[no]bin-log
+=item --bin-log
 
-default: yes
-
-Enable binary logging (C<SET SQL_LOG_BIN=1>).
+Allow binary logging (C<SET SQL_LOG_BIN=1>).  By default binary logging is
+turned off because in most cases the L<"--tmp-table"> does not need to
+be replicated.  Also, performing an online schema change in a replication
+environment requires careful planning else replication may be broken;
+see L<"REPLICATION">.
 
 =item --charset
 
@@ -4812,21 +4899,31 @@ STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and runs SET
 NAMES UTF8 after connecting to MySQL.  Any other value sets binmode on STDOUT
 without the utf8 layer, and runs SET NAMES after connecting to MySQL.
 
+=item --check-tables-and-exit
+
+Check that the table can be altered then exit; do not alter the table.
+If you just want to see that the tool can/will work for the given table,
+specify this option.  Even if all checks pass, the tool may still encounter
+problems if, for example, one of the L<"--alter"> statements uses
+incorrect syntax.
+
 =item --child-tables
 
 type: string
 
-Foreign key constraints in these (child) tables reference the old table.
-If the old table being altered is a parent to tables which reference it with
+Foreign key constraints in these (child) tables reference the table.
+If the table being altered is a parent to tables which reference it with
 foreign key constraints, you must specify those child tables with this option
 so that the tool will update the foreign key constraints after renaming
-tables.  The list of child tables is comma-separted, not quoted, and not
-database-qualified (the database is assumed to be the same as the old table)
+tables.  The list of child tables is comma-separated, not quoted, and not
+database-qualified (the database is assumed to be the same as the table)
 If you specify a table that doesn't exist, it is ignored.
 
-Or you can specify just C<auto-detect> and the tool will query the
-C<INFORMATION_SCHEMA> to auto-detect any foreign key contraints on the
-old table.  
+Or you can specify just C<auto_detect> and the tool will query the
+C<INFORMATION_SCHEMA> to auto-detect any foreign key constraints on the table.
+
+When specifying this option, you must also specify
+L<"--update-foreign-keys-method">.
 
 =item --chunk-size
 
@@ -4839,7 +4936,7 @@ to a number of rows by dividing by the average row length.
 =item --cleanup-and-exit
 
 Cleanup and exit; do not alter the table.  If a previous run fails, you
-may need to use this option to remove any temp tables, triggers,
+may need to use this option to remove any temporary tables, triggers,
 outfiles, etc. that where left behind before another run will succeed.
 
 =item --config
@@ -4849,27 +4946,24 @@ type: Array
 Read this comma-separated list of config files; if specified, this must be the
 first option on the command line.
 
-=item --[no]create-new-table
+=item --[no]create-tmp-table
 
 default: yes
 
-Create the new table with C<CREATE TABLE LIKE>.  The new table to which
-the L<"--alter-new-table"> statements are applied is automatically created
-by default.  If you want to create it manually before running this tool,
-then you need to specify C<--no-create-new-table> B<and> L<"--new-table">
-so the tool will use your new table.
-
-=item --daemonize
-
-Fork to the background and detach from the shell.  POSIX operating systems
-only.
+Create the L<"--tmp-table"> with C<CREATE TABLE LIKE>.  The temporary table
+to which the L<"--alter"> statements are applied is automatically created
+by default with the name C<__tmp_TABLE> where C<TABLE> is the original table
+specified by the DSN on the command line.  If you want to create the temporary
+table manually before running this tool, then you must specify
+C<--no-create-tmp-table> B<and> L<"--tmp-table"> so the tool will use your
+temporary table.
 
 =item --database
 
 short form: -D; type: string
 
-Database for the old and new table.  The new table can only be created
-inside the same database as the old (original) table.
+Database of the table.  You can also specify the database with the C<D> part
+of the DSN given on the command line.
 
 =item --defaults-file
 
@@ -4880,18 +4974,14 @@ pathname.
 
 =item --drop-old-table
 
-Drop the old (original) table.  By default, the old table is not dropped
-after the new table has taken its place.  In case of problems, the old
-table may be needed.  When this option is specified, the old table is dropped
-after (if) everything finishes successfully.  If there is a problem,
-both table (old/original and new/altered) will probably be left.
+Drop the original table after it's swapped with the L<"--tmp-table">.
+After the original table is renamed/swapped with the L<"--tmp-table">
+it becomes the "old table".  By default, the old table is not dropped
+because if there are problems with the "new table" (the temporary table
+swapped for the original table), then the old table can be restored.
 
-=item --exit-after-checks
-
-Run all checks then exit; do not alter the table.  If you just want to see
-that the tool can/will work for the given table, specify this option.  Even
-if all checks pass, the tool may still encounter problems if, for example,
-one of the L<"--alter-new-table"> statements uses incorrect syntax.
+If altering a table with foreign key constraints, you may need to specify
+this option depending on which L<"--update-foreign-keys-method"> you choose.
 
 =item --[no]foreign-key-checks
 
@@ -4909,24 +4999,6 @@ short form: -h; type: string
 
 Connect to host.
 
-=item --log
-
-type: string
-
-Print all output to this file when daemonized.
-
-=item --new-table
-
-type: string
-
-Table name for new table until renamed to old (original) table name.
-If you specify C<--no-create-new-table>, then you must also use this option
-to specify the name of the new table.  By default, when the tool automatically
-creates the new table, the new table name is C<__new_OLD_TABLE_NAME> where
-C<OLD_TABLE_NAME> is the old (original) table named specified by the DSN's
-C<t> part.  The new and old tables are eventually swapped, if
-C<"--[no]rename-tables"> is specified (it is by default).
-
 =item --password
 
 short form: -p; type: string
@@ -4937,10 +5009,10 @@ Password to use when connecting.
 
 type: string
 
-Create the given PID file when daemonized.  The file contains the process ID of
-the daemonized instance.  The PID file is removed when the daemonized instance
-exits.  The program checks for the existence of the PID file when starting; if
-it exists and the process with the matching PID exists, the program exits.
+Create the given PID file.  The file contains the process ID of the tool's
+instance.  The PID file is removed when the tool exits.  The tool checks for
+the existence of the PID file when starting; if it exists and the process with
+the matching PID exists, the tool exits.
 
 =item --port
 
@@ -4974,7 +5046,11 @@ STDERR.
 
 default: yes
 
-Rename new table to old table.
+Rename/swap the original table and the L<"--tmp-table">.  This option
+essentially completes the online schema change process by making the
+temporary table with the new schema take the place of the original table.
+The original tables becomes the "old table" and is dropped if
+L<"--drop-old-table"> is specified.
 
 =item --set-vars
 
@@ -4996,6 +5072,78 @@ short form: -S; type: string
 
 Socket file to use for connection.
 
+=item --tmp-table
+
+type: string
+
+Temporary table if C<--no-create-tmp-table> is specified.  If you specify
+C<--no-create-tmp-table>, then you must also specify this option to tell
+the tool which table to use as the temporary table.  The temporary table
+and the original table are renamed/swapped unless C<--no-rename-tables> is
+specified.
+
+The default behavior, when this option is not specified and
+C<--[no]create-tmp-tble> is true, is to create a temporary table named
+C<__tmp_TABLE> where C<TABLE> is the original table specified by the DSN
+on the command line.
+
+=item --update-foreign-keys-method
+
+type: string
+
+Method for updating foreign key constraints in L<"--child-tables">.  If
+L<"--child-tables"> is specified, the tool will need to ensure that foreign
+key constraints in those tables continue to reference the original table
+after it is renamed and/or dropped.  This is necessary because when a parent
+table is renamed, MySQL automatically updates all child table
+foreign key constraints that reference the renamed table so that the rename
+does not break foreign key constraints.  This poses a problem for this tool.
+
+For example: if the table being altered is C<foo>, then C<foo> is renamed
+to C<__old_foo> when it is swapped with the L<"--tmp-table">.
+Any foreign key references to C<foo> before it is swapped/renamed are renamed
+automatically by MySQL to C<__old_foo>.  We do not want this; we want those
+foreign key references to continue to reference C<foo>.
+
+There are currently two methods to solve this problem:
+
+=over
+
+=item rebuild_constraints
+
+Drop and re-add child table foreign key constraints to reference the new table.
+(The new table is the temporary table after being renamed/swapped.  To MySQL
+it's a new table because it does not know that it's a copy of the original
+table).  This method parses foreign key constraints referencing the original
+table from all child tables, drops them, then re-adds them referencing the
+new table.
+
+This method uses C<ALTER TABLE> which can by slow and blocking, but it is
+safer because the old table does not need to be dropped.  So if there's a
+problem with the new table and L<"--drop-old-table"> was not specified,
+then the original table can be restored.
+
+=item drop_old_table
+
+Disable foreign key checks (FOREIGN_KEY_CHECKS=0) then drop the original table.
+This method bypasses MySQL's auto-renaming feature by disabling foreign key
+checks, dropping the original table, then renaming the temporary table with
+the same name.  Foreign key checks must be disabled to drop table because it is
+referenced by foreign key constraints.  Since the original table is not renamed,
+MySQL does not auto-rename references to it.  Then the temporary table is
+renamed to the same name so child table references are maintained.
+So this method requires L<"--drop-old-table">.
+
+This method is faster and does not block, but it is less safe for two reasons.
+One, for a very short time (between dropping the original table and renaming the
+temporary table) the child tables reference a non-existent table.  Two, more
+importantly, if for some reason the temporary table was not copied correctly,
+didn't capture all changes, etc., the original table cannot be recovered
+because it was dropped. 
+
+=back
+
+
 =item --user
 
 short form: -u; type: string
@@ -5005,12 +5153,6 @@ User for login if not current user.
 =item --version
 
 Show version and exit.
-
-=item --where
-
-type: string
-
-WHERE condition to limit chunking range.  See also L<"--chunk-size">.
 
 =back
 
@@ -5109,7 +5251,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-online-schema-change>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-online-schema-change>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -5127,7 +5269,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -5143,14 +5285,14 @@ Place, Suite 330, Boston, MA  02111-1307  USA.
 
 Daniel Nichter
 
-=head1 HISTORY AND ACKNOWLEDGEMENTS
+=head1 HISTORY AND ACKNOWLEDGMENTS
 
 The "online schema change" concept was first implemented by Shlomi Noach
 in his tool C<oak-online-alter-table>, part of
-L<http://code.google.com/p/openarkkit/>.  Then, engineers at Facebook built
-their version called C<OnlineSchemaChange.php>; see
-L<http://www.facebook.com/notes/mysql-at-facebook/online-schema-change-for-mysql/430801045932>.  Searching for "online schema change" will return other
-relevant pages about this concept.
+L<http://code.google.com/p/openarkkit/>.  Then engineers at Facebook built
+their version called C<OnlineSchemaChange.php> as explained by their blog
+post: L<http://tinyurl.com/32zeb86>.  Searching for "online schema change"
+will return other relevant pages about this concept.
 
 This implementation, C<mk-online-schema-change>, is a hybrid of Shlomi's
 and Facebook's approach.  Shlomi's code is a full-featured tool with command
@@ -5171,6 +5313,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7593 $.
 
 =cut

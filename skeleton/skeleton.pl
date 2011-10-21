@@ -31,7 +31,7 @@ use Term::ReadKey;
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", q$Revision$ =~ m/(\d+)/g || 0);
+our $SVN_REV = sprintf("%d", q$Revision: 941 $ =~ m/(\d+)/g || 0);
 
 # ############################################################################
 # Get configuration information.

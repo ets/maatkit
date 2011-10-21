@@ -21,6 +21,8 @@ $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
 $Data::Dumper::Quotekeys = 0;
 
+my $sample = "$trunk/common/t/samples/";
+
 my ($next_fh, $fh, $name, $size);
 my $fi = new FileIterator();
 isa_ok($fi, 'FileIterator');
@@ -45,13 +47,13 @@ is( "$fh", '*main::STDIN', 'Got STDIN for "-"' );
 # #############################################################################
 # Real filenames.
 # #############################################################################
-$next_fh = $fi->get_file_itr(qw(samples/memc_tcpdump009.txt samples/empty));
+$next_fh = $fi->get_file_itr("$sample/memc_tcpdump009.txt", "$sample/empty");
 ( $fh, $name, $size ) = $next_fh->();
 is( ref $fh, 'GLOB', 'Open filehandle' );
-is( $name, 'samples/memc_tcpdump009.txt', "Got filename for $name");
+is( $name, "$sample/memc_tcpdump009.txt", "Got filename for $name");
 is( $size, 587, "Got size for $name");
 ( $fh, $name, $size ) = $next_fh->();
-is( $name, 'samples/empty', "Got filename for $name");
+is( $name, "$sample/empty", "Got filename for $name");
 is( $size, 0, "Got size for $name");
 ( $fh, $name, $size ) = $next_fh->();
 is( $fh, undef, 'Ran off the end of the list' );

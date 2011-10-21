@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -22,7 +22,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7477 $ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
 # DSNParser package 7388
@@ -1675,7 +1675,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -1721,7 +1721,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -2079,7 +2079,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -5402,11 +5402,12 @@ cases where it fails, submit a bug report and a reproducible test case.
 
 Queries that cannot be EXPLAINed will cause all subsequent queries with the
 same fingerprint to be blacklisted.  This is to reduce the work they cause, and
-prevent them from continuing to print error messages.  However, at least in this
-stage of the tool's development, it is my opinion that it's not a good idea to
-pre-emtively silence these, or prevent them from being EXPLAINed at all.  I am
-looking for lots of feedback on how to improve things like the query parsing.
-So please submit your test cases based on the errors the tool prints!
+prevent them from continuing to print error messages.  However, at least in
+this stage of the tool's development, it is my opinion that it's not a good
+idea to preemptively silence these, or prevent them from being EXPLAINed at
+all.  I am looking for lots of feedback on how to improve things like the
+query parsing.  So please submit your test cases based on the errors the tool
+prints!
 
 =head1 OUTPUT
 
@@ -5884,7 +5885,7 @@ reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-index-usage>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-index-usage>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -5902,7 +5903,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -5927,6 +5928,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7477 $.
 
 =cut

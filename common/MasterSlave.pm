@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# MasterSlave package $Revision$
+# MasterSlave package $Revision: 7595 $
 # ###########################################################################
 
 # Package: MasterSlave
@@ -237,11 +237,12 @@ sub get_connected_slaves {
    my $proc;
    eval {
       $proc = grep {
+         MKDEBUG && _d($_);
          m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
       } @{$dbh->selectcol_arrayref($sql)};
    };
    if ( $EVAL_ERROR ) {
-
+      MKDEBUG && _d($EVAL_ERROR);
       if ( $EVAL_ERROR =~ m/no such grant defined for user/ ) {
          # Try again without a host.
          MKDEBUG && _d('Retrying SHOW GRANTS without host; error:',
@@ -251,6 +252,7 @@ sub get_connected_slaves {
          MKDEBUG && _d($sql);
          eval {
             $proc = grep {
+               MKDEBUG && _d($_);
                m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
             } @{$dbh->selectcol_arrayref($sql)};
          };
@@ -353,28 +355,31 @@ sub get_slave_status {
       MKDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
       $self->{not_a_slave}->{$dbh}++;
    }
+   return;
 }
 
 # Gets SHOW MASTER STATUS, with column names all lowercased, as a hashref.
 sub get_master_status {
    my ( $self, $dbh ) = @_;
-   if ( !$self->{not_a_master}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-            ||= $dbh->prepare('SHOW MASTER STATUS');
-      MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
-      $sth->execute();
-      my ($ms) = @{$sth->fetchall_arrayref({})};
 
-      if ( $ms && %$ms ) {
-         $ms = { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
-         if ( $ms->{file} && $ms->{position} ) {
-            return $ms;
-         }
-      }
+   if ( $self->{not_a_master}->{$dbh} ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+      return;
+   }
 
-      MKDEBUG && _d('This server returns nothing for SHOW MASTER STATUS');
+   my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
+         ||= $dbh->prepare('SHOW MASTER STATUS');
+   MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   $sth->execute();
+   my ($ms) = @{$sth->fetchall_arrayref({})};
+   MKDEBUG && _d(Dumper($ms));
+
+   if ( !$ms || scalar keys %$ms < 2 ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
       $self->{not_a_master}->{$dbh}++;
    }
+
+  return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
 # Sub: wait_for_master
@@ -384,12 +389,11 @@ sub get_master_status {
 #   %args - Arguments
 #
 # Required Arguments:
-#   * master_dbh - dbh for master host
-#   * slave_dbh  - dbh for slave host
+#   * master_status - Hashref returned by <get_master_status()>
+#   * slave_dbh     - dbh for slave host
 #
 # Optional Arguments:
-#   * timeout       - Wait time in seconds (default 60)
-#   * master_status - Hashref returned by <get_master_status()>
+#   * timeout - Wait time in seconds (default 60)
 #
 # Returns:
 #   Hashref with result of waiting, like:
@@ -401,14 +405,12 @@ sub get_master_status {
 #   (end code)
 sub wait_for_master {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_dbh slave_dbh);
+   my @required_args = qw(master_status slave_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $slave_dbh) = @args{@required_args};
+   my ($master_status, $slave_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
-   my $master_status = $args{master_status}
-                       || $self->get_master_status($master_dbh);
 
    my $result;
    my $waited;
@@ -416,8 +418,8 @@ sub wait_for_master {
       my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', "
               . "$master_status->{position}, $timeout)";
       MKDEBUG && _d($slave_dbh, $sql);
-      my $start  = time;
-      ($result)  = $slave_dbh->selectrow_array($sql);
+      my $start = time;
+      ($result) = $slave_dbh->selectrow_array($sql);
 
       # If MASTER_POS_WAIT() returned NULL and we waited at least 1s
       # and the time we waited is less than the timeout then this is
@@ -469,7 +471,7 @@ sub start_slave {
 # complete, the slave is caught up to the master, and the slave process is
 # stopped on both servers.
 sub catchup_to_master {
-   my ( $self, $slave, $master, $time ) = @_;
+   my ( $self, $slave, $master, $timeout ) = @_;
    $self->stop_slave($master);
    $self->stop_slave($slave);
    my $slave_status  = $self->get_slave_status($slave);
@@ -485,17 +487,17 @@ sub catchup_to_master {
       $self->start_slave($slave, $master_pos);
 
       # The slave may catch up instantly and stop, in which case
-      # MASTER_POS_WAIT will return NULL and $result will be undef.
+      # MASTER_POS_WAIT will return NULL and $result->{result} will be undef.
       # We must catch this; if it returns NULL, then we check that
       # its position is as desired.
       # TODO: what if master_pos_wait times out and $result == -1? retry?
       $result = $self->wait_for_master(
-            master_dbh    => $master,
+            master_status => $master_status,
             slave_dbh     => $slave,
-            timeout       => $time,
+            timeout       => $timeout,
             master_status => $master_status
       );
-      if ( !defined $result ) {
+      if ( !defined $result->{result} ) {
          $slave_status = $self->get_slave_status($slave);
          if ( !$self->slave_is_running($slave_status) ) {
             MKDEBUG && _d('Master position:',
@@ -794,6 +796,7 @@ sub repl_posn {
 sub get_slave_lag {
    my ( $self, $dbh ) = @_;
    my $stat = $self->get_slave_status($dbh);
+   return unless $stat;
    return $stat->{seconds_behind_master};
 }
 

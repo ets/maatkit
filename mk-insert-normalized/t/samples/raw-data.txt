@@ -1,0 +1,86 @@
+-- Source: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=raw_data
+-- Dest: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=data
+-- Constant values:
+--   posted=2011-06-15
+--   acquired=2011-06-14
+-- INSERT table order:
+--   test.data_report
+--   test.entity
+--   test.data
+-- Column test.raw_data.posted maps to constant value 2011-06-15
+-- Column test.raw_data.acquired maps to constant value 2011-06-14
+-- Column test.raw_data.date maps to column test.data_report.date
+-- Column test.raw_data.hour maps to column test.data.hour
+-- Foreign key column test.data.data_report maps to column test.data_report.id
+-- Foreign key column test.data.entity maps to column test.entity.id
+-- Column test.raw_data.entity_property_1 maps to column test.entity.entity_property_1
+-- Column test.raw_data.entity_property_2 maps to column test.entity.entity_property_2
+-- Column test.raw_data.data_1 maps to column test.data.data_1
+-- Column test.raw_data.data_2 maps to column test.data.data_2
+-- SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) LIMIT 1
+-- SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) LIMIT 1
+-- Bind values: 
+START TRANSACTION
+INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2011-06-01, 2011-06-15, 2011-06-14
+INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: ep1-1, ep2-1
+SELECT id AS data_report FROM test.data_report WHERE id=? LIMIT 1
+SELECT id AS entity FROM test.entity WHERE id=? LIMIT 1
+INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 1, 101, 1, d1-1, d2-1
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- Bind values: 2011-06-01
+START TRANSACTION
+INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2011-06-02, 2011-06-15, 2011-06-14
+INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: ep1-2, ep2-2
+SELECT id AS data_report FROM test.data_report WHERE id=? LIMIT 1
+SELECT id AS entity FROM test.entity WHERE id=? LIMIT 1
+INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2, 102, 2, d1-2, d2-2
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- Bind values: 2011-06-02
+START TRANSACTION
+INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2011-06-03, 2011-06-15, 2011-06-14
+INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: ep1-3, ep2-3
+SELECT id AS data_report FROM test.data_report WHERE id=? LIMIT 1
+SELECT id AS entity FROM test.entity WHERE id=? LIMIT 1
+INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 3, 103, 3, d1-3, d2-3
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- Bind values: 2011-06-03
+START TRANSACTION
+INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2011-06-04, 2011-06-15, 2011-06-14
+INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: ep1-4, ep2-4
+SELECT id AS data_report FROM test.data_report WHERE id=? LIMIT 1
+SELECT id AS entity FROM test.entity WHERE id=? LIMIT 1
+INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 4, 104, 4, d1-4, d2-4
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- Bind values: 2011-06-04
+START TRANSACTION
+INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 2011-06-05, 2011-06-15, 2011-06-14
+INSERT INTO `test`.`entity` (entity_property_1, entity_property_2) VALUES (?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: ep1-5, ep2-5
+SELECT id AS data_report FROM test.data_report WHERE id=? LIMIT 1
+SELECT id AS entity FROM test.entity WHERE id=? LIMIT 1
+INSERT INTO `test`.`data` (data_report, hour, entity, data_1, data_2) VALUES (?, ?, ?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */
+-- Bind values: 5, 105, 5, d1-5, d2-5
+COMMIT
+SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
+-- Bind values: 2011-06-05

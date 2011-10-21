@@ -60,6 +60,7 @@ my $sop = {
    'threads'         => {type  => 'i', short => '', },
    'verbose'         => {type  => '',  short => 'v' },
    'wait'            => {type  => 'm', short => 'w' },
+   'recurse'         => {type  => 'i', short => ''  },
 };
    
 my %dir_for_tool = (

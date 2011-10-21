@@ -1,4 +1,4 @@
-# This program is copyright 2010 Percona Inc.
+# This program is copyright 2010, 2011 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -120,8 +120,15 @@ sub is_archivable {
       }
    }
    else {
-      # This should happen once.
+      # Init next_val.  This happens once.
       MKDEBUG && _d('First val:', $val);
+      if ( $val > 1 ) {
+         # We want to compact vals starting at 1.  So if the first val
+         # isn't 1, then manually make it 1.
+         MKDEBUG && _d('Updating', $val, 'to 1');
+         $sth->execute(1, $val); 
+         $val = 1;
+      }
       $self->{next_val} = $val;
    }
 

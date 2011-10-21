@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# ProtocolParser package $Revision$
+# ProtocolParser package $Revision: 7522 $
 # ###########################################################################
 package ProtocolParser;
 
@@ -78,11 +78,13 @@ sub parse_event {
       my $event;
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{client_packets}};
       
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{server_packets}};
 
@@ -97,7 +99,9 @@ sub parse_event {
       return;
    }
 
-   return $self->_parse_packet($packet, $args{misc});
+   my $event = $self->_parse_packet($packet, $args{misc});
+   $args{stats}->{events_parsed}++ if $args{stats};
+   return $event;
 }
 
 # The packet arg should be a hashref from TcpdumpParser::parse_event().

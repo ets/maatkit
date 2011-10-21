@@ -1,0 +1,10 @@
+-- Source: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=raw_data_animal_1
+-- Dest: D=test,F=/tmp/12345/my.sandbox.cnf,h=localhost,t=animal
+-- INSERT table order:
+--   test.report_animal
+--   test.animal
+-- Foreign key column test.animal.report_animal maps to column test.report_animal.id
+-- SELECT /*!40001 SQL_NO_CACHE */ `acquired`, `name`, `max_weight`, `mkin_id` FROM `test`.`raw_data_animal_1` FORCE INDEX(`PRIMARY`) LIMIT 100
+-- SELECT /*!40001 SQL_NO_CACHE */ `acquired`, `name`, `max_weight`, `mkin_id` FROM `test`.`raw_data_animal_1` FORCE INDEX(`PRIMARY`) WHERE ((`mkin_id` > ?)) LIMIT 100
+-- INSERT IGNORE INTO `test`.`report_animal` (`acquired`) VALUES (?) /* CopyRowsNormalized src_tbl:test.raw_data_animal_1 group:0 txn_size:100 pid:0 user:none */
+-- INSERT IGNORE INTO `test`.`animal` (`report_animal`, `name`, `max_weight`) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data_animal_1 group:0 txn_size:100 pid:0 user:none */

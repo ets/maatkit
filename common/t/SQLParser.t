@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 118;
+use Test::More tests => 137;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -31,6 +31,77 @@ throws_ok(
    "Dies if statement type cannot be parsed"
 );
 
+# ############################################################################
+# parse_csv
+# ############################################################################
+sub test_parse_csv {
+   my ( $in, $expect, %args ) = @_;
+   my $got = $sp->_parse_csv($in, %args);
+   is_deeply(
+      $got,
+      $expect,
+      "parse_csv($in)"
+   ) or print Dumper($got);
+   return;
+}
+
+test_parse_csv(
+   "a,b",
+   [qw(a b)],
+);
+
+test_parse_csv(
+   q{'', ','},
+   [q{''}, q{','}],
+   quoted_values => 1,
+);
+
+test_parse_csv(
+   q{"", "a"},
+   [q{""}, q{"a"}],
+   quoted_values => 1,
+);
+
+test_parse_csv(
+   q{'hello, world!','hi'},
+   [q{'hello, world!'}, q{'hi'}],
+   quoted_values => 1,
+);
+
+test_parse_csv(
+   q{'a',   "b",   c},
+   [q{'a'}, q{"b"}, q{c}],
+   quoted_values => 1,
+);
+
+test_parse_csv(
+   q{"x, y", "", a, 'b'},
+   [q{"x, y"}, q{""}, q{a}, q{'b'}],
+   quoted_values => 1,
+);
+
+# ############################################################################
+# is_identifier
+# ############################################################################
+sub test_is_identifier {
+   my ( $thing, $expect ) = @_;
+   is(
+      $sp->is_identifier($thing),
+      $expect,
+      "$thing is" . ($expect ? "" : " not") . " an ident"
+   );
+   return;
+}
+
+test_is_identifier("tbl",        1);
+test_is_identifier("`tbl`",      1);
+test_is_identifier("'tbl'",      0);
+test_is_identifier("\"tbl\"",    0);
+test_is_identifier('db.tbl',     1);
+test_is_identifier('"db.tbl"',   0);
+test_is_identifier('db.tbl.col', 1);
+test_is_identifier('1',          0);
+
 # #############################################################################
 # WHERE where_condition
 # #############################################################################
@@ -39,7 +110,8 @@ sub test_where {
    is_deeply(
       $sp->parse_where($where),
       $struct,
-      "WHERE $where"
+      "WHERE " . substr($where, 0, 60) 
+         . (length $where > 60 ? '...' : ''),
    );
 };
 
@@ -48,9 +120,9 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
    ],
 );
@@ -60,27 +132,27 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'or',
-         column    => 'j',
+         left_arg  => 'j',
          operator  => '<',
-         value     => '10',
+         right_arg => '10',
       },
       {
          predicate => 'or',
-         column    => 'k',
+         left_arg  => 'k',
          operator  => '>',
-         value     => '100',
+         right_arg => '100',
       },
       {
          predicate => 'or',
-         column    => 'l',
+         left_arg  => 'l',
          operator  => '!=',
-         value     => '0',
+         right_arg => '0',
       },
    ],
 );
@@ -90,15 +162,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => '=',
-         value     => '"bar"',
+         right_arg => '"bar"',
       },
    ],
 );
@@ -108,15 +180,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => '=',
-         value     => '"bar"',
+         right_arg => '"bar"',
       },
    ],
 );
@@ -126,15 +198,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => '=',
-         value     => '"bar"',
+         right_arg => '"bar"',
       },
    ],
 );
@@ -144,21 +216,21 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => '=',
-         value     => '"bar"',
+         right_arg => '"bar"',
       },
       {
          predicate => 'or',
-         column    => 'j',
+         left_arg  => 'j',
          operator  => '=',
-         value     => '2',
+         right_arg => '2',
       },
    ],
 );
@@ -168,15 +240,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => '=',
-         value     => '"i have spaces and a keyword!"',
+         right_arg => '"i have spaces and a keyword!"',
       },
    ],
 );
@@ -186,27 +258,27 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '"this and this"',
+         right_arg => '"this and this"',
       },
       {
          predicate => 'or',
-         column    => 'j',
+         left_arg  => 'j',
          operator  => '<>',
-         value     => '"that and that"',
+         right_arg => '"that and that"',
       },
       {
          predicate => 'and',
-         column    => 'k',
+         left_arg  => 'k',
          operator  => '=',
-         value     => '"and or and"',
+         right_arg => '"and or and"',
       },
       {
          predicate => 'and',
-         column    => 'z',
+         left_arg  => 'z',
          operator  => '=',
-         value     => '1',
+         right_arg => '1',
       },
    ],
 );
@@ -216,33 +288,33 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'i',
+         left_arg  => 'i',
          operator  => '=',
-         value     => '"this and this"',
+         right_arg => '"this and this"',
       },
       {
          predicate => 'or',
-         column    => 'j',
+         left_arg  => 'j',
          operator  => 'in',
-         value     => '("and", "or")',
+         right_arg => '("and", "or")',
       },
       {
          predicate => 'and',
-         column    => 'x',
+         left_arg  => 'x',
          operator  => 'is not',
-         value     => 'null',
+         right_arg => 'null',
       },
       {
          predicate => 'or',
-         column    => 'a',
+         left_arg  => 'a',
          operator  => 'between',
-         value     => '1 and 10',
+         right_arg => '1 and 10',
       },
       {
          predicate => 'and',
-         column    => 'sz',
+         left_arg  => 'sz',
          operator  => '=',
-         value     => '"the keyword \'and\' is in the middle or elsewhere hidden"',
+         right_arg => '"the keyword \'and\' is in the middle or elsewhere hidden"',
       },
    ],
 );
@@ -252,9 +324,9 @@ test_where(
    [
       {
          predicate => undef,
-         column    => '`ga_announcement`.`disabled`',
+         left_arg  => '`ga_announcement`.`disabled`',
          operator  => '=',
-         value     => '0',
+         right_arg => '0',
       },
    ]
 );
@@ -264,9 +336,9 @@ test_where(
    [
       {
          predicate => undef,
-         column    => undef,
+         left_arg  => undef,
          operator  => undef,
-         value     => '1',
+         right_arg => '1',
       },
    ]
 );
@@ -276,15 +348,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => undef,
+         left_arg  => undef,
          operator  => undef,
-         value     => '1',
+         right_arg => '1',
       },
       {
          predicate => 'and',
-         column    => 'foo',
+         left_arg  => 'foo',
          operator  => 'not like',
-         value     => '\'%bar%\'',
+         right_arg => '\'%bar%\'',
       },
    ]
 );
@@ -294,15 +366,15 @@ test_where(
    [
       {
          predicate => undef,
-         column    => undef,
+         left_arg  => undef,
          operator  => undef,
-         value     => 'true',
+         right_arg => 'true',
       },
       {
          predicate => 'or',
-         column    => undef,
+         left_arg  => undef,
          operator  => undef,
-         value     => 'false',
+         right_arg => 'false',
       },
    ]
 );
@@ -312,9 +384,9 @@ test_where(
    [
       {
          predicate => undef,
-         column    => "TO_DAYS(column)",
+         left_arg  => "TO_DAYS(column)",
          operator  => '<',
-         value     => 'TO_DAYS(NOW()) - 5',
+         right_arg => 'TO_DAYS(NOW()) - 5',
       },
    ]
 );
@@ -324,10 +396,46 @@ test_where(
    [
       {
          predicate => undef,
-         column    => 'id',
+         left_arg  => 'id',
          operator  => '<>',
-         value     => 'CONV(ff, 16, 10)',
+         right_arg => 'CONV(ff, 16, 10)',
       },
+   ]
+);
+
+test_where(
+   "edpik.input_key = input_key.id",
+   [
+      {
+         predicate => undef,
+         left_arg  => 'edpik.input_key',
+         operator  => '=',
+         right_arg => 'input_key.id'
+      },
+   ]
+);
+
+test_where(
+   "((`sakila`.`city`.`country_id` = `sakila`.`country`.`country_id`) and (`sakila`.`country`.`country` = 'Brazil') and (`sakila`.`city`.`city` like 'A%'))",
+   [
+      {
+         predicate => undef,
+         left_arg  => '`sakila`.`city`.`country_id`',
+         operator  => '=',
+         right_arg => '`sakila`.`country`.`country_id`'
+      },
+      {
+        predicate => 'and',
+        left_arg  => '`sakila`.`country`.`country`',
+        operator  => '=',
+        right_arg => '\'Brazil\''
+      },
+      {
+        predicate => 'and',
+        left_arg  => '`sakila`.`city`.`city`',
+        operator  => 'like',
+        right_arg => '\'A%\''
+      }
    ]
 );
 
@@ -510,17 +618,17 @@ sub test_from {
 
 test_from(
    'tbl',
-   [ { name => 'tbl', } ],
+   [ { tbl => 'tbl', } ],
 );
 
 test_from(
    'tbl ta',
-   [ { name  => 'tbl', alias => 'ta', }  ],
+   [ { tbl  => 'tbl', alias => 'ta', }  ],
 );
 
 test_from(
    'tbl AS ta',
-   [ { name           => 'tbl',
+   [ { tbl           => 'tbl',
        alias          => 'ta',
        explicit_alias => 1,
    } ],
@@ -529,9 +637,9 @@ test_from(
 test_from(
    't1, t2',
    [
-      { name => 't1', },
+      { tbl => 't1', },
       {
-         name => 't2',
+         tbl => 't2',
          join => {
             to    => 't1',
             type  => 'inner',
@@ -544,11 +652,11 @@ test_from(
 test_from(
    't1 a, t2 as b',
    [
-      { name  => 't1',
+      { tbl  => 't1',
         alias => 'a',
       },
       {
-        name           => 't2',
+        tbl           => 't2',
         alias          => 'b',
         explicit_alias => 1,
         join           => {
@@ -565,10 +673,10 @@ test_from(
    't1 JOIN t2 ON t1.id=t2.id',
    [
       {
-         name => 't1',
+         tbl => 't1',
       },
       {
-         name => 't2',
+         tbl => 't2',
          join => {
             to         => 't1',
             type       => 'inner',
@@ -576,9 +684,9 @@ test_from(
             where      => [
                {
                   predicate => undef,
-                  column    => 't1.id',
+                  left_arg  => 't1.id',
                   operator  => '=',
-                  value     => 't2.id',
+                  right_arg => 't2.id',
                },
             ],
             ansi       => 1,
@@ -591,11 +699,11 @@ test_from(
    't1 a JOIN t2 as b USING (id)',
    [
       {
-         name  => 't1',
+         tbl  => 't1',
          alias => 'a',
       },
       {
-         name  => 't2',
+         tbl  => 't2',
          alias => 'b',
          explicit_alias => 1,
          join  => {
@@ -613,10 +721,10 @@ test_from(
    't1 JOIN t2 ON t1.id=t2.id JOIN t3 ON t1.id=t3.id',
    [
       {
-         name  => 't1',
+         tbl  => 't1',
       },
       {
-         name  => 't2',
+         tbl  => 't2',
          join  => {
             to         => 't1',
             type       => 'inner',
@@ -624,16 +732,16 @@ test_from(
             where      => [
                {
                   predicate => undef,
-                  column    => 't1.id',
+                  left_arg  => 't1.id',
                   operator  => '=',
-                  value     => 't2.id',
+                  right_arg => 't2.id',
                },
             ],
             ansi       => 1,
          },
       },
       {
-         name  => 't3',
+         tbl  => 't3',
          join  => {
             to         => 't2',
             type       => 'inner',
@@ -641,9 +749,9 @@ test_from(
             where      => [
                {
                   predicate => undef,
-                  column    => 't1.id',
+                  left_arg  => 't1.id',
                   operator  => '=',
-                  value     => 't3.id',
+                  right_arg => 't3.id',
                },
             ],
             ansi       => 1,
@@ -656,12 +764,12 @@ test_from(
    't1 AS a LEFT JOIN t2 b ON a.id = b.id',
    [
       {
-         name  => 't1',
+         tbl  => 't1',
          alias => 'a',
          explicit_alias => 1,
       },
       {
-         name  => 't2',
+         tbl  => 't2',
          alias => 'b',
          join  => {
             to         => 't1',
@@ -670,9 +778,9 @@ test_from(
             where      => [
                {
                   predicate => undef,
-                  column    => 'a.id',
+                  left_arg  => 'a.id',
                   operator  => '=',
-                  value     => 'b.id',
+                  right_arg => 'b.id',
                },
             ],
             ansi       => 1,
@@ -685,11 +793,11 @@ test_from(
    't1 a NATURAL RIGHT OUTER JOIN t2 b',
    [
       {
-         name  => 't1',
+         tbl  => 't1',
          alias => 'a',
       },
       {
-         name  => 't2',
+         tbl  => 't2',
          alias => 'b',
          join  => {
             to   => 't1',
@@ -705,10 +813,10 @@ test_from(
    'a, b LEFT JOIN c ON c.c = a.a',
    [
       {
-         name  => 'a',
+         tbl  => 'a',
       },
       {
-         name  => 'b',
+         tbl  => 'b',
          join  => {
             to   => 'a',
             type => 'inner',
@@ -716,7 +824,7 @@ test_from(
          },
       },
       {
-         name  => 'c',
+         tbl  => 'c',
          join  => {
             to         => 'b',
             type       => 'left',
@@ -724,9 +832,9 @@ test_from(
             where      => [
                {
                   predicate => undef,
-                  column    => 'c.c',
+                  left_arg  => 'c.c',
                   operator  => '=',
-                  value     => 'a.a',
+                  right_arg => 'a.a',
                },
             ],
             ansi       => 1, 
@@ -739,10 +847,10 @@ test_from(
    'a, b, c CROSS JOIN d USING (id)',
    [
       {
-         name  => 'a',
+         tbl  => 'a',
       },
       {
-         name  => 'b',
+         tbl  => 'b',
          join  => {
             to   => 'a',
             type => 'inner',
@@ -750,7 +858,7 @@ test_from(
          },
       },
       {
-         name  => 'c',
+         tbl  => 'c',
          join  => {
             to   => 'b',
             type => 'inner',
@@ -758,7 +866,7 @@ test_from(
          },
       },
       {
-         name  => 'd',
+         tbl  => 'd',
          join  => {
             to         => 'c',
             type       => 'cross',
@@ -775,7 +883,7 @@ test_from(
    'tbl FORCE INDEX (foo)',
    [
       {
-         name       => 'tbl',
+         tbl       => 'tbl',
          index_hint => 'FORCE INDEX (foo)',
       }
    ]
@@ -785,7 +893,7 @@ test_from(
    'tbl USE INDEX(foo)',
    [
       {
-         name       => 'tbl',
+         tbl       => 'tbl',
          index_hint => 'USE INDEX(foo)',
       }
    ]
@@ -795,7 +903,7 @@ test_from(
    'tbl FORCE KEY(foo)',
    [
       {
-         name       => 'tbl',
+         tbl       => 'tbl',
          index_hint => 'FORCE KEY(foo)',
       }
    ]
@@ -805,7 +913,7 @@ test_from(
    'tbl t FORCE KEY(foo)',
    [
       {
-         name       => 'tbl',
+         tbl       => 'tbl',
          alias      => 't',
          index_hint => 'FORCE KEY(foo)',
       }
@@ -816,7 +924,7 @@ test_from(
    'tbl AS t FORCE KEY(foo)',
    [
       {
-         name           => 'tbl',
+         tbl           => 'tbl',
          alias          => 't',
          explicit_alias => 1,
          index_hint     => 'FORCE KEY(foo)',
@@ -829,7 +937,7 @@ test_from(
    'db.tbl',
    [{
       db   => 'db',
-      name => 'tbl',
+      tbl => 'tbl',
    }],
 );
 
@@ -837,7 +945,7 @@ test_from(
    '`db`.`tbl`',
    [{
       db   => 'db',
-      name => 'tbl',
+      tbl => 'tbl',
    }],
 );
 
@@ -845,7 +953,7 @@ test_from(
    '`ryan likes`.`to break stuff`',
    [{
       db   => 'ryan likes',
-      name => 'to break stuff',
+      tbl => 'to break stuff',
    }],
 );
 
@@ -853,10 +961,10 @@ test_from(
    '`db`.`tbl` LEFT JOIN `foo`.`bar` USING (glue)',
    [
       {  db   => 'db',
-         name => 'tbl',
+         tbl => 'tbl',
       },
       {  db   => 'foo',
-         name => 'bar',
+         tbl => 'bar',
          join => {
             to        => 'tbl',
             type      => 'left',
@@ -872,12 +980,12 @@ test_from(
    'tblB AS dates LEFT JOIN dbF.tblC AS scraped ON dates.dt = scraped.dt AND dates.version = scraped.version',
    [
       {
-        name           => 'tblB',
+        tbl           => 'tblB',
         alias          => 'dates',
         explicit_alias => 1,
       },
       {
-        name           => 'tblC',
+        tbl           => 'tblC',
         alias          => 'scraped',
         explicit_alias => 1,
         db             => 'dbF',
@@ -889,15 +997,15 @@ test_from(
           where      => [
             {
               predicate => undef,
-              column    => 'dates.dt',
+              left_arg  => 'dates.dt',
               operator  => '=',
-              value     => 'scraped.dt',
+              right_arg => 'scraped.dt',
             },
             {
               predicate => 'and',
-              column    => 'dates.version',
+              left_arg  => 'dates.version',
               operator  => '=',
-              value     => 'scraped.version',
+              right_arg => 'scraped.version',
             },
           ],
         },
@@ -910,22 +1018,22 @@ test_from(
 # table name.
 test_from(
    "db.version",
-   [ { db=>'db', name=>'version', } ],
+   [ { db=>'db', tbl=>'version', } ],
 );
 
 test_from(
    "db.like_using_odd_table_names",
-   [ { db=>'db', name=>'like_using_odd_table_names', } ],
+   [ { db=>'db', tbl=>'like_using_odd_table_names', } ],
 );
 
 test_from(
    "db.`on`",  # don't name your table this :-(
-   [ { db=>'db', name=>'on', } ],
+   [ { db=>'db', tbl=>'on', } ],
 );
 
 test_from(
    "db.`using`",  # or this
-   [ { db=>'db', name=>'using', } ],
+   [ { db=>'db', tbl=>'using', } ],
 );
 
 # #############################################################################
@@ -943,60 +1051,60 @@ sub test_parse_table_reference {
 }
 
 test_parse_table_reference('tbl',
-   { name => 'tbl', }
+   { tbl => 'tbl', }
 );
 
 test_parse_table_reference('tbl a',
-   { name => 'tbl', alias => 'a', }
+   { tbl => 'tbl', alias => 'a', }
 );
 
 test_parse_table_reference('tbl as a',
-   { name => 'tbl', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', alias => 'a', explicit_alias => 1, }
 );
 
 test_parse_table_reference('tbl AS a',
-   { name => 'tbl', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', alias => 'a', explicit_alias => 1, }
 );
 
 test_parse_table_reference('db.tbl',
-   { name => 'tbl', db => 'db', }
+   { tbl => 'tbl', db => 'db', }
 );
 
 test_parse_table_reference('db.tbl a',
-   { name => 'tbl', db => 'db', alias => 'a', }
+   { tbl => 'tbl', db => 'db', alias => 'a', }
 );
 
 test_parse_table_reference('db.tbl AS a',
-   { name => 'tbl', db => 'db', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', db => 'db', alias => 'a', explicit_alias => 1, }
 );
 
 
 test_parse_table_reference('`tbl`',
-   { name => 'tbl', }
+   { tbl => 'tbl', }
 );
 
 test_parse_table_reference('`tbl` `a`',
-   { name => 'tbl', alias => 'a', }
+   { tbl => 'tbl', alias => 'a', }
 );
 
 test_parse_table_reference('`tbl` as `a`',
-   { name => 'tbl', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', alias => 'a', explicit_alias => 1, }
 );
 
 test_parse_table_reference('`tbl` AS `a`',
-   { name => 'tbl', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', alias => 'a', explicit_alias => 1, }
 );
 
 test_parse_table_reference('`db`.`tbl`',
-   { name => 'tbl', db => 'db', }
+   { tbl => 'tbl', db => 'db', }
 );
 
 test_parse_table_reference('`db`.`tbl` `a`',
-   { name => 'tbl', db => 'db', alias => 'a', }
+   { tbl => 'tbl', db => 'db', alias => 'a', }
 );
 
 test_parse_table_reference('`db`.`tbl` AS `a`',
-   { name => 'tbl', db => 'db', alias => 'a', explicit_alias => 1, }
+   { tbl => 'tbl', db => 'db', alias => 'a', explicit_alias => 1, }
 );
 
 # #############################################################################
@@ -1014,7 +1122,7 @@ sub test_parse_columns {
 }
 
 test_parse_columns('tbl.* foo',
-   [ { name => '*', tbl => 'tbl', alias => 'foo' } ],
+   [ { col => '*', tbl => 'tbl', alias => 'foo' } ],
 );
 
 # #############################################################################
@@ -1032,14 +1140,14 @@ sub test_parse_set {
 
 test_parse_set(
    "col='val'",
-   [{column=>"col", value=>"val"}],
+   [{col=>"col", value=>"'val'"}],
 );
 
 test_parse_set(
-   'a.foo="bar", b.foo="bat"',
+   'a.foo="bar", b.foo=NOW()',
    [
-      {tbl=>"a", column=>"foo", value=>"bar"},
-      {tbl=>"b", column=>"foo", value=>"bat"},
+      {tbl=>"a", col=>"foo", value=>'"bar"'},
+      {tbl=>"b", col=>"foo", value=>'NOW()'},
    ],
 );
 
@@ -1219,7 +1327,7 @@ my @cases = (
       struct => {
          type    => 'delete',
          clauses => { from => 'tbl', },
-         from    => [ { name => 'tbl', } ],
+         from    => [ { tbl => 'tbl', } ],
          unknown => undef,
       },
    },
@@ -1231,13 +1339,13 @@ my @cases = (
             from  => 'tbl ',
             where => 'id=1',
          },
-         from    => [ { name => 'tbl', } ],
+         from    => [ { tbl => 'tbl', } ],
          where   => [
             {
                predicate => undef,
-               column    => 'id',
+               left_arg  => 'id',
                operator  => '=',
-               value     => '1',
+               right_arg => '1',
             },
          ],
          unknown => undef,
@@ -1251,7 +1359,7 @@ my @cases = (
             from  => 'tbl ',
             limit => '5',
          },
-         from    => [ { name => 'tbl', } ],
+         from    => [ { tbl => 'tbl', } ],
          limit   => {
             row_count => 5,
          },
@@ -1266,7 +1374,7 @@ my @cases = (
             from     => 'tbl ',
             order_by => 'foo',
          },
-         from     => [ { name => 'tbl', } ],
+         from     => [ { tbl => 'tbl', } ],
          order_by => [{column=>'foo'}],
          unknown  => undef,
       },
@@ -1280,13 +1388,13 @@ my @cases = (
             where => 'id=1 ',
             limit => '3',
          },
-         from    => [ { name => 'tbl', } ],
+         from    => [ { tbl => 'tbl', } ],
          where   => [
             {
                predicate => undef,
-               column    => 'id',
+               left_arg  => 'id',
                operator  => '=',
-               value     => '1',
+               right_arg  => '1',
             },
          ],
          limit   => {
@@ -1304,13 +1412,13 @@ my @cases = (
             where    => 'id=1 ',
             order_by => 'id',
          },
-         from     => [ { name => 'tbl', } ],
+         from     => [ { tbl => 'tbl', } ],
          where   => [
             {
                predicate => undef,
-               column    => 'id',
+               left_arg  => 'id',
                operator  => '=',
-               value     => '1',
+               right_arg => '1',
             },
          ],
          order_by => [{column=>'id'}],
@@ -1327,13 +1435,13 @@ my @cases = (
             order_by => 'id ASC ',
             limit    => '1 OFFSET 3',
          },
-         from    => [ { name => 'tbl', } ],
+         from    => [ { tbl => 'tbl', } ],
          where   => [
             {
                predicate => undef,
-               column    => 'id',
+               left_arg  => 'id',
                operator  => '=',
-               value     => '1',
+               right_arg => '1',
             },
          ],
          order_by=> [{column=>'id', sort=>'ASC'}],
@@ -1357,8 +1465,26 @@ my @cases = (
             into   => 'tbl',
             values => '(1,"foo")',
          },
-         into   => [ { name => 'tbl', } ],
-         values => [ '(1,"foo")', ],
+         into   => [ { tbl => 'tbl', } ],
+         values => [ '1', q{"foo"}, ],
+         unknown => undef,
+      },
+   },
+   {  name   => 'INSERT INTO VALUES with complex CSV values',
+      query  => 'INSERT INTO tbl VALUES ("hello, world!", "", a, \'b\')',
+      struct => {
+         type    => 'insert',
+         clauses => { 
+            into   => 'tbl',
+            values => '("hello, world!", "", a, \'b\')',
+         },
+         into   => [ { tbl => 'tbl', } ],
+         values => [
+            q{"hello, world!"},
+            q{""},
+            q{a},
+            q{'b'},
+         ],
          unknown => undef,
       },
    },
@@ -1370,8 +1496,8 @@ my @cases = (
             into   => 'tbl',
             values => '(1,"foo")',
          },
-         into   => [ { name => 'tbl', } ],
-         values => [ '(1,"foo")', ],
+         into   => [ { tbl => 'tbl', } ],
+         values => [ '1', q{"foo"}, ],
          unknown => undef,
       },
    },
@@ -1384,9 +1510,9 @@ my @cases = (
             columns => 'id, name ',
             values  => '(2,"bob")',
          },
-         into    => [ { name => 'tbl', db => 'db' } ],
-         columns => [ { name => 'id' }, { name => 'name' } ],
-         values  => [ '(2,"bob")', ],
+         into    => [ { tbl => 'tbl', db => 'db' } ],
+         columns => [ { col => 'id' }, { col => 'name' } ],
+         values  => [ '2', q{"bob"} ],
          unknown => undef,
       },
    },
@@ -1399,8 +1525,8 @@ my @cases = (
             values       => '(3,"bob")',
             on_duplicate => 'col1=9',
          },
-         into         => [ { name => 'tbl', } ],
-         values       => [ '(3,"bob")', ],
+         into         => [ { tbl => 'tbl', } ],
+         values       => [ '3', q{"bob"} ],
          on_duplicate => ['col1=9',],
          unknown      => undef,
       },
@@ -1413,10 +1539,10 @@ my @cases = (
             into => 'tbl',
             set  => 'id=1, foo=NULL',
          },
-         into    => [ { name => 'tbl', } ],
+         into    => [ { tbl => 'tbl', } ],
          set     => [
-            { column => 'id',  value => '1',    },
-            { column => 'foo', value => 'NULL', },
+            { col => 'id',  value => '1',    },
+            { col => 'foo', value => 'NULL', },
          ],
          unknown => undef,
       },
@@ -1430,8 +1556,8 @@ my @cases = (
             set          => 'i=3',
             on_duplicate => 'col1=9',
          },
-         into         => [ { name => 'tbl', } ],
-         set          => [{column=>'i', value=>'3'}],
+         into         => [ { tbl => 'tbl', } ],
+         set          => [{col =>'i', value=>'3'}],
          on_duplicate => ['col1=9',],
          unknown      => undef,
       },
@@ -1445,8 +1571,8 @@ my @cases = (
             columns => 'col ',
             select  => 'id FROM tbl2 WHERE id > 100',
          },
-         into         => [ { name => 'tbl', } ],
-         columns      => [ { name => 'col' } ],
+         into         => [ { tbl => 'tbl', } ],
+         columns      => [ { col => 'col' } ],
          select       => {
             type    => 'select',
             clauses => { 
@@ -1454,14 +1580,14 @@ my @cases = (
                from    => 'tbl2 ',
                where   => 'id > 100',
             },
-            columns => [ { name => 'id' } ],
-            from    => [ { name => 'tbl2', } ],
+            columns => [ { col => 'id' } ],
+            from    => [ { tbl => 'tbl2', } ],
             where   => [
                {
                   predicate => undef,
-                  column    => 'id',
+                  left_arg  => 'id',
                   operator  => '>',
-                  value     => '100',
+                  right_arg => '100',
                },
             ],
             unknown => undef,
@@ -1478,9 +1604,9 @@ my @cases = (
             columns => 'id, name ',
             values  => '(2,"bob")',
          },
-         into    => [ { name => 'tbl', db => 'db' } ],
-         columns => [ { name => 'id' }, { name => 'name' } ],
-         values  => [ '(2,"bob")', ],
+         into    => [ { tbl => 'tbl', db => 'db' } ],
+         columns => [ { col => 'id' }, { col => 'name' } ],
+         values  => [ '2', q{"bob"} ],
          unknown => undef,
       },
    },
@@ -1498,8 +1624,8 @@ my @cases = (
             into   => 'tbl',
             values => '(1,"foo")',
          },
-         into   => [ { name => 'tbl', } ],
-         values => [ '(1,"foo")', ],
+         into   => [ { tbl => 'tbl', } ],
+         values => [ '1', q{"foo"} ],
          unknown => undef,
       },
    },
@@ -1511,8 +1637,8 @@ my @cases = (
             into   => 'tbl',
             values => '(1,"foo")',
          },
-         into   => [ { name => 'tbl', } ],
-         values => [ '(1,"foo")', ],
+         into   => [ { tbl => 'tbl', } ],
+         values => [ '1', q{"foo"} ],
          unknown => undef,
       },
    },
@@ -1525,9 +1651,9 @@ my @cases = (
             columns => 'id, name ',
             values  => '(2,"bob")',
          },
-         into    => [ { name => 'tbl', db => 'db' } ],
-         columns => [ { name => 'id' }, { name => 'name' } ],
-         values  => [ '(2,"bob")', ],
+         into    => [ { tbl => 'tbl', db => 'db' } ],
+         columns => [ { col => 'id' }, { col => 'name' } ],
+         values  => [ '2', q{"bob"} ],
          unknown => undef,
       },
    },
@@ -1541,8 +1667,8 @@ my @cases = (
             into    => 'db.tblA',
             select  => 'dates.dt, scraped.total_r FROM tblB AS dates LEFT JOIN dbF.tblC AS scraped ON dates.dt = scraped.dt AND dates.version = scraped.version',
          },
-         columns => [ { name => 'dt' }, { name => 'ncpc' } ],
-         into    => [ { db => 'db', name => 'tblA' } ],
+         columns => [ { col => 'dt' }, { col => 'ncpc' } ],
+         into    => [ { db => 'db', tbl => 'tblA' } ],
          select  => {
             type    => 'select',
             clauses => {
@@ -1550,17 +1676,17 @@ my @cases = (
                from    => 'tblB AS dates LEFT JOIN dbF.tblC AS scraped ON dates.dt = scraped.dt AND dates.version = scraped.version',
             },
             columns => [
-               { tbl => 'dates',   name => 'dt'      },
-               { tbl => 'scraped', name => 'total_r' },
+               { tbl => 'dates',   col => 'dt'      },
+               { tbl => 'scraped', col => 'total_r' },
             ],
             from    => [
                {
-                 name           => 'tblB',
+                 tbl            => 'tblB',
                  alias          => 'dates',
                  explicit_alias => 1,
                },
                {
-                 name           => 'tblC',
+                 tbl            => 'tblC',
                  alias          => 'scraped',
                  explicit_alias => 1,
                  db             => 'dbF',
@@ -1572,15 +1698,15 @@ my @cases = (
                    where => [
                      {
                        predicate => undef,
-                       column    => 'dates.dt',
+                       left_arg  => 'dates.dt',
                        operator  => '=',
-                       value     => 'scraped.dt',
+                       right_arg => 'scraped.dt',
                      },
                      {
                        predicate => 'and',
-                       column    => 'dates.version',
+                       left_arg  => 'dates.version',
                        operator  => '=',
-                       value     => 'scraped.version',
+                       right_arg => 'scraped.version',
                      },
                    ],
                  },
@@ -1602,7 +1728,7 @@ my @cases = (
          clauses => { 
             columns => 'NOW()',
          },
-         columns => [ { name => 'NOW()' } ],
+         columns => [ { col => 'NOW()' } ],
          unknown => undef,
       },
    },
@@ -1613,7 +1739,7 @@ my @cases = (
          clauses => { 
             columns => '@@version_comment',
          },
-         columns => [ { name => '@@version_comment' } ],
+         columns => [ { col => '@@version_comment' } ],
          unknown => undef,
       },
    },
@@ -1625,8 +1751,8 @@ my @cases = (
             columns => 'col1, col2 ',
             from    => 'tbl',
          },
-         columns => [ { name => 'col1' }, { name => 'col2' } ],
-         from    => [ { name => 'tbl', } ],
+         columns => [ { col => 'col1' }, { col => 'col2' } ],
+         from    => [ { tbl => 'tbl', } ],
          unknown => undef,
       },
    },
@@ -1652,16 +1778,16 @@ my @cases = (
             order_by => 't2.name ASC ',
             limit    => '100, 10',
          },
-         columns => [ { name => 'col1', tbl => 't1', alias => 'a' },
-                      { name => 'col2', tbl => 't1', alias => 'b',
+         columns => [ { col => 'col1', tbl => 't1', alias => 'a' },
+                      { col => 'col2', tbl => 't1', alias => 'b',
                         explicit_alias => 1 } ],
          from    => [
             {
-               name  => 'tbl1',
+               tbl   => 'tbl1',
                alias => 't1',
             },
             {
-               name  => 'tbl2',
+               tbl   => 'tbl2',
                alias => 't2',
                explicit_alias => 1,
                join  => {
@@ -1671,9 +1797,9 @@ my @cases = (
                   where      => [
                      {
                         predicate => undef,
-                        column    => 't1.id',
+                        left_arg  => 't1.id',
                         operator  => '=',
-                        value     => 't2.id',
+                        right_arg => 't2.id',
                      },
                   ],
                   ansi      => 1,
@@ -1683,15 +1809,15 @@ my @cases = (
          where    => [
             {
                predicate => undef,
-               column    => 't2.col',
+               left_arg  => 't2.col',
                operator  => 'is not',
-               value     => 'null',
+               right_arg => 'null',
             },
             {
                predicate => 'and',
-               column    => 't2.name',
+               left_arg  => 't2.name',
                operator  => '=',
-               value     => '"bob"',
+               right_arg => '"bob"',
             },
          ],
          group_by => [
@@ -1724,16 +1850,16 @@ my @cases = (
             from     => 'tbl1 t1 JOIN tbl2 AS t2 on (t1.id = t2.id) JOIN tbl3 t3 using (id) ',
             where    => 't2.col IS NOT NULL',
          },
-         columns => [ { name => 'col1', tbl => 't1', alias => 'a' },
-                      { name => 'col2', tbl => 't1', alias => 'b',
+         columns => [ { col => 'col1', tbl => 't1', alias => 'a' },
+                      { col => 'col2', tbl => 't1', alias => 'b',
                         explicit_alias => 1 } ],
          from    => [
             {
-               name  => 'tbl1',
+               tbl   => 'tbl1',
                alias => 't1',
             },
             {
-               name  => 'tbl2',
+               tbl   => 'tbl2',
                alias => 't2',
                explicit_alias => 1,
                join  => {
@@ -1743,16 +1869,16 @@ my @cases = (
                   where      => [
                      {
                         predicate => undef,
-                        column    => 't1.id',
+                        left_arg  => 't1.id',
                         operator  => '=',
-                        value     => 't2.id',
+                        right_arg => 't2.id',
                      },
                   ],
                   ansi      => 1,
                },
             },
             {
-               name  => 'tbl3',
+               tbl   => 'tbl3',
                alias => 't3',
                join  => {
                   to        => 'tbl2',
@@ -1766,9 +1892,9 @@ my @cases = (
          where    => [
             {
                predicate => undef,
-               column    => 't2.col',
+               left_arg  => 't2.col',
                operator  => 'is not',
-               value     => 'null',
+               right_arg => 'null',
             },
          ],
          unknown => undef,
@@ -1781,7 +1907,7 @@ my @cases = (
          clauses  => { 
             columns => 'NOW()',
          },
-         columns  => [ { name => 'NOW()' } ],
+         columns  => [ { col => 'NOW()' } ],
          keywords => {
             all                 => 1,
             high_priority       => 1,
@@ -1800,14 +1926,14 @@ my @cases = (
             from    => 'tbl ',
             where   => 'ip="127.0.0.1"',
          },
-         columns  => [ { name => '*' } ],
-         from     => [ { name => 'tbl' } ],
+         columns  => [ { col => '*' } ],
+         from     => [ { tbl => 'tbl' } ],
          where    => [
             {
                predicate => undef,
-               column    => 'ip',
+               left_arg  => 'ip',
                operator  => '=',
-               value     => '"127.0.0.1"',
+               right_arg => '"127.0.0.1"',
             },
          ],
          unknown  => undef,
@@ -1822,14 +1948,14 @@ my @cases = (
             from    => 't ',
             where   => 'id in(__SQ0__)',
          },
-         columns    => [ { name => '*' } ],
-         from       => [ { name => 't' } ],
+         columns    => [ { col => '*' } ],
+         from       => [ { tbl => 't' } ],
          where      => [
             {
                predicate => undef,
-               column    => 'id',
+               left_arg  => 'id',
                operator  => 'in',
-               value     => '(__SQ0__)',
+               right_arg => '(__SQ0__)',
             },
          ],
          unknown    => undef,
@@ -1842,8 +1968,8 @@ my @cases = (
                   columns => 'col ',
                   from    => 't2',
                },
-               columns    => [ { name => 'col' } ],
-               from       => [ { name => 't2' } ],
+               columns    => [ { col => 'col' } ],
+               from       => [ { tbl => 't2' } ],
                unknown    => undef,
             },
          ],
@@ -1866,13 +1992,13 @@ my @cases = (
             group_by => '1 ',
             limit    => '10',
          },
-         columns    => [ { name => 'now()' }, { name => '__SQ3__' } ],
+         columns    => [ { col => 'now()' }, { col => '__SQ3__' } ],
          from       => [
             {
-               name => 't1',
+               tbl => 't1',
             },
             {
-               name => 't2',
+               tbl  => 't2',
                join => {
                   to   => 't1',
                   ansi => 0,
@@ -1880,7 +2006,7 @@ my @cases = (
                },
             },
             {
-               name  => '__SQ2__',
+               tbl => '__SQ2__',
                alias => 't3',
                explicit_alias => 1,
                join  => {
@@ -1892,7 +2018,7 @@ my @cases = (
                },
             },
             {
-               name => 't4',
+               tbl => 't4',
                join => {
                   to   => '__SQ2__',
                   ansi => 1,
@@ -1900,9 +2026,9 @@ my @cases = (
                   where      => [
                      {
                         predicate => undef,
-                        column    => 't4.id',
+                        left_arg  => 't4.id',
                         operator  => '=',
-                        value     => 't3.id',
+                        right_arg => 't3.id',
                      },
                   ],
                   condition  => 'on',
@@ -1912,21 +2038,21 @@ my @cases = (
          where      => [
             {
                predicate => undef,
-               column    => 'c1',
+               left_arg  => 'c1',
                operator  => '>',
-               value     => 'any(__SQ1__)',
+               right_arg => 'any(__SQ1__)',
             },
             {
                predicate => 'and',
-               column    => 's',
+               left_arg  => 's',
                operator  => 'in',
-               value     => '("select", "tricky")',
+               right_arg => '("select", "tricky")',
             },
             {
                predicate => 'or',
-               column    => 's',
+               left_arg  => 's',
                operator  => '<>',
-               value     => '"select"',
+               right_arg => '"select"',
             },
          ],
          limit      => { row_count => 10 },
@@ -1939,9 +2065,9 @@ my @cases = (
                   from    => 'l ',
                   where   => 'col<100'
                },
-               columns => [ { name => 'max(col)' } ],
+               columns => [ { col => 'max(col)' } ],
                context => 'scalar',
-               from    => [ { name => 'l' } ],
+               from    => [ { tbl => 'l' } ],
                nested  => 1,
                query   => 'select max(col) from l where col<100',
                type    => 'select',
@@ -1949,9 +2075,9 @@ my @cases = (
                where   => [
                   {
                      predicate => undef,
-                     column    => 'col',
+                     left_arg  => 'col',
                      operator  => '<',
-                     value     => '100',
+                     right_arg => '100',
                   },
                ],
             },
@@ -1962,19 +2088,19 @@ my @cases = (
                   where   => 'sqtc<__SQ0__'
                },
                columns => [
-                  { alias => 'z', explicit_alias => 1, name => 'col2' }
+                  { alias => 'z', explicit_alias => 1, col => 'col2' }
                ],
                context  => 'list',
-               from     => [ { alias => 'zz', name => 'sqt2' } ],
+               from     => [ { alias => 'zz', tbl => 'sqt2' } ],
                query    => 'select col2 as z from sqt2 zz where sqtc<__SQ0__',
                type     => 'select',
                unknown  => undef,
                where    => [
                   {
                      predicate => undef,
-                     column    => 'sqtc',
+                     left_arg  => 'sqtc',
                      operator  => '<',
-                     value     => '__SQ0__',
+                     right_arg => '__SQ0__',
                   },
                ],
             },
@@ -1983,9 +2109,9 @@ my @cases = (
                   columns => '* ',
                   from    => 'sqt1'
                },
-               columns  => [ { name => '*' } ],
+               columns  => [ { col => '*' } ],
                context  => 'identifier',
-               from     => [ { name => 'sqt1' } ],
+               from     => [ { tbl => 'sqt1' } ],
                query    => 'select * from sqt1',
                type     => 'select',
                unknown  => undef
@@ -1996,18 +2122,18 @@ my @cases = (
                   from  => 'bar ',
                   where => 'id=1'
                },
-               columns  => [ { name => 'foo' } ],
+               columns  => [ { col => 'foo' } ],
                context  => 'identifier',
-               from     => [ { name => 'bar' } ],
+               from     => [ { tbl => 'bar' } ],
                query    => 'select foo from bar where id=1',
                type     => 'select',
                unknown  => undef,
                where    => [
                   {
                      predicate => undef,
-                     column    => 'id',
+                     left_arg  => 'id',
                      operator  => '=',
-                     value     => '1',
+                     right_arg => '1',
                   },
                ],
             },
@@ -2029,10 +2155,10 @@ my @cases = (
             from    => "`w_chapter` INNER JOIN `w_series` AS `w_chapter__series` ON `w_chapter`.`series_id` = `w_chapter__series`.`id`, `w_series`, `auth_user` ",
             where   => "`w_chapter`.`status` = 1",
          },
-         columns => [{name => '*'}],
+         columns => [{col => '*'}],
          from    => [
           {
-            name => 'w_chapter'
+            tbl => 'w_chapter'
           },
           {
             alias => 'w_chapter__series',
@@ -2043,15 +2169,15 @@ my @cases = (
                where      => [
                   {
                      predicate => undef,
-                     column    => '`w_chapter`.`series_id`',
+                     left_arg  => '`w_chapter`.`series_id`',
                      operator  => '=',
-                     value     => '`w_chapter__series`.`id`',
+                     right_arg => '`w_chapter__series`.`id`',
                   },
                ],
               to => 'w_chapter',
               type => 'inner'
             },
-            name => 'w_series'
+            tbl => 'w_series'
           },
           {
             join => {
@@ -2059,7 +2185,7 @@ my @cases = (
               to => 'w_series',
               type => 'inner'
             },
-            name => 'w_series'
+            tbl => 'w_series'
           },
           {
             join => {
@@ -2067,15 +2193,15 @@ my @cases = (
               to => 'w_series',
               type => 'inner'
             },
-            name => 'auth_user'
+            tbl => 'auth_user'
           }
          ],
          where   => [
             {
                predicate => undef,
-               column    => '`w_chapter`.`status`',
+               left_arg  => '`w_chapter`.`status`',
                operator  => '=',
-               value     => '1',
+               right_arg => '1',
             },
          ],
          unknown => undef,
@@ -2093,8 +2219,8 @@ my @cases = (
             tables => 'tbl ',
             set    => 'col=1',
          },
-         tables  => [ { name => 'tbl', } ],
-         set     => [ { column =>'col', value => '1' } ],
+         tables  => [ { tbl => 'tbl', } ],
+         set     => [ { col =>'col', value => '1' } ],
          unknown => undef,
       },
    },
@@ -2109,14 +2235,14 @@ my @cases = (
             order_by => 'id ',
             limit    => '10',
          },
-         tables   => [ { name => 'tbl', alias => 't', explicit_alias => 1, } ],
-         set      => [ { column => 'foo', value => 'NULL' } ],
+         tables   => [ { tbl => 'tbl', alias => 't', explicit_alias => 1, } ],
+         set      => [ { col => 'foo', value => 'NULL' } ],
          where    => [
             {
                predicate => undef,
-               column    => 'foo',
+               left_arg  => 'foo',
                operator  => 'is not',
-               value     => 'null',
+               right_arg => 'null',
             },
          ],
          order_by => [{column=>'id'}],
@@ -2140,17 +2266,17 @@ my @cases = (
          columns => [
             { db    => 'sakila',
               tbl   => 'city',
-              name  => 'country_id',
+              col   => 'country_id',
               alias => 'country_id',
               explicit_alias => 1,
             },
          ],
-         from    => [ { db=>'sakila', name=>'city' } ],
+         from    => [ { db=>'sakila', tbl=>'city' } ],
          where   => [ {
             predicate => undef,
-            column    => '`sakila`.`city`.`country_id`',
+            left_arg  => '`sakila`.`city`.`country_id`',
             operator  => '=',
-            value     => '1',
+            right_arg => '1',
          } ],
          unknown => undef,
       },
@@ -2166,6 +2292,83 @@ foreach my $test ( @cases ) {
    ) or print Dumper($struct);
    die if $test->{stop};
 }
+
+# ############################################################################
+# Use Schema to achieve full awesomeness.
+# ############################################################################
+use OptionParser;
+use DSNParser;
+use Quoter;
+use TableParser;
+use FileIterator;
+use Schema;
+use SchemaIterator;
+
+my $o  = new OptionParser(description => 'SchemaIterator');
+$o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
+
+my $q          = new Quoter;
+my $tp         = new TableParser(Quoter => $q);
+my $fi         = new FileIterator();
+my $file_itr   = $fi->get_file_itr("$trunk/common/t/samples/mysqldump-no-data/dump001.txt");
+my $schema     = new Schema();
+my $schema_itr = new SchemaIterator(
+   file_itr     => $file_itr,
+   OptionParser => $o,
+   Quoter       => $q,
+   TableParser  => $tp,
+   keep_ddl     => 1,
+   Schema       => $schema,
+);
+# Init schema.
+1 while ($schema_itr->next_schema_object());
+
+# Notice how c3 and b aren't qualified.
+is_deeply(
+   $sp->parse("select c3 from b where 'foo'=c3"),
+   {
+      type     => 'select',
+      clauses  => {
+         columns => 'c3 ',
+         from    => 'b ',
+         where   => '\'foo\'=c3',
+      },
+      columns  => [ { col => 'c3' } ],
+      from     => [ { tbl => 'b' } ],
+      where    => [ {
+         left_arg  => "'foo'",
+         operator  => '=',
+         right_arg => 'c3',
+         predicate => undef,
+      } ],
+      unknown  => undef,
+   },
+   "Query struct without Schema"
+);
+
+# Now they're qualified.
+$sp->set_Schema($schema);
+is_deeply(
+   $sp->parse("select c3 from b where 'foo'=c3"),
+   {
+      type     => 'select',
+      clauses  => {
+         columns => 'c3 ',
+         from    => 'b ',
+         where   => '\'foo\'=c3',
+      },
+      columns  => [ { db => 'test', tbl => 'b', col => 'c3' } ],
+      from     => [ { db => 'test', tbl => 'b' } ],
+      where    => [ {
+         left_arg  => "'foo'",
+         operator  => '=',
+         right_arg => 'c3',
+         predicate => undef,
+      } ],
+      unknown  => undef,
+   },
+   "Query struct with Schema"
+);
 
 # #############################################################################
 # Done.

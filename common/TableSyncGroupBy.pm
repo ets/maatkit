@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# TableSyncGroupBy package $Revision$
+# TableSyncGroupBy package $Revision: 5697 $
 # ###########################################################################
 package TableSyncGroupBy;
 # This package syncs tables without primary keys by doing an all-columns GROUP

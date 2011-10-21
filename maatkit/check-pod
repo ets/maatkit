@@ -48,11 +48,13 @@ my %standard_hdr = (
 # TODO: somehow check that optional headers are near where they should be.
 my @optional_order = (
    'OUTPUT',
+   'EXIT STATUS',
    'SEE ALSO',
 );
 my %optional_hdr = (
-   'OUTPUT'   => 1,
-   'SEE ALSO' => 1, 
+   'OUTPUT'      => 1,
+   'EXIT STATUS' => 1,
+   'SEE ALSO'    => 1, 
 );
 
 chomp(my $podchecker = `which podchecker`);

@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# DuplicateKeyFinder package $Revision$
+# DuplicateKeyFinder package $Revision: 7565 $
 # ###########################################################################
 package DuplicateKeyFinder;
 
@@ -186,7 +186,7 @@ sub get_duplicate_fks {
          my $i_pcols = join(',', sort @{$fks[$i]->{parent_cols}} );
          my $j_pcols = join(',', sort @{$fks[$j]->{parent_cols}} );
 
-         if ( $fks[$i]->{parent_tbl} eq $fks[$j]->{parent_tbl}
+         if ( $fks[$i]->{parent_tblname} eq $fks[$j]->{parent_tblname}
               && $i_cols  eq $j_cols
               && $i_pcols eq $j_pcols ) {
             my $dupe = {
@@ -198,11 +198,11 @@ sub get_duplicate_fks {
                duplicate_of_ddl  => $fks[$i]->{ddl},
                reason            =>
                     "FOREIGN KEY $fks[$j]->{name} ($fks[$j]->{colnames}) "
-                  . "REFERENCES $fks[$j]->{parent_tbl} "
+                  . "REFERENCES $fks[$j]->{parent_tblname} "
                   . "($fks[$j]->{parent_colnames}) "
                   . 'is a duplicate of '
                   . "FOREIGN KEY $fks[$i]->{name} ($fks[$i]->{colnames}) "
-                  . "REFERENCES $fks[$i]->{parent_tbl} "
+                  . "REFERENCES $fks[$i]->{parent_tblname} "
                   ."($fks[$i]->{parent_colnames})",
                dupe_type         => 'fk',
             };

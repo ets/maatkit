@@ -1,5 +1,4 @@
-# This program is copyright 2010 Percona Inc.
-
+# This program is copyright 2010-2011 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -16,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# Retry package $Revision$
+# Retry package $Revision: 7473 $
 # ###########################################################################
 package Retry;
 
@@ -74,7 +73,7 @@ sub retry {
 
       if ( $EVAL_ERROR ) {
          MKDEBUG && _d("Try code died:", $EVAL_ERROR);
-         return unless $args{retry_on_die};
+         die $EVAL_ERROR unless $args{retry_on_die};
       }
 
       # Wait if there's more retries, else end immediately.

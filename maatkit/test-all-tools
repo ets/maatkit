@@ -1,0 +1,26 @@
+#!/bin/sh
+
+cd $MAATKIT_WORKING_COPY
+
+outfile=/tmp/maatkit-test-results.txt
+failed_tests=$MAATKIT_WORKING_COPY/failed-tests.txt
+exit_status=0
+
+rm $failed_tests > /dev/null
+
+for tool in `cat maatkit/packages`; do
+	echo $tool > $outfile
+	echo -n "Testing $tool... "
+	prove -v -r $tool/ > $outfile 2>&1
+	if [ $? -ne 0 ]; then
+		echo "FAIL"
+		exit_status=1
+		echo "$tool test results" >> $failed_tests
+		cat $outfile >> $failed_tests
+		echo >> $failed_tests
+	else
+		echo "PASS"
+	fi
+done
+
+exit $exit_status

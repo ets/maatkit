@@ -7,7 +7,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -24,7 +24,7 @@ use warnings FATAL => 'all';
 
 our $VERSION = '@VERSION@';
 our $DISTRIB = '@DISTRIB@';
-our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
+our $SVN_REV = sprintf("%d", (q$Revision: 7531 $ =~ m/(\d+)/g, 0));
 
 use English qw(-no_match_vars);
 $OUTPUT_AUTOFLUSH = 1;
@@ -1492,7 +1492,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# BinaryLogParser package 6785
+# BinaryLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/BinaryLogParser.pm
@@ -1665,6 +1665,10 @@ sub parse_event {
       if ( $found_arg ) {
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {
@@ -1691,7 +1695,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -2954,7 +2958,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -3000,7 +3004,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -4768,7 +4772,7 @@ mk-slave-prefetch - Pipeline relay logs on a MySQL slave to pre-warm caches.
 
 =head1 SYNOPSIS
 
-Usage: mk-slave-prefech [OPTION...] [FILE]
+Usage: mk-slave-prefetch [OPTION...] [FILE]
 
 mk-slave-prefetch pipelines relay logs to pre-warm the slave's caches.
 
@@ -5027,7 +5031,7 @@ statements through.  See the L<"--reject-regexp"> and L<"--permit-regexp">
 options.
 
 If C<mk-slave-prefetch> hasn't seen a query's fingerprint before, and thus
-doesn't know how long it will take to execute, it wraps it in a subuery, like
+doesn't know how long it will take to execute, it wraps it in a subquery, like
 this:
 
    SELECT 1 FROM ( <query> ) AS X LIMIT 1;
@@ -5047,7 +5051,7 @@ queries).  The rewritten query will then look like the following;
 =item --num-prefix
 
 Abstract away numeric table name prefixes.  This causes the following two
-queries to "fingeprint" to the same thing:
+queries to "fingerprint" to the same thing:
 
   select from 1_2_users;
   select from 2_3_users;
@@ -5379,7 +5383,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-slave-prefetch>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-slave-prefetch>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -5397,7 +5401,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -5422,6 +5426,6 @@ Maatkit development is primarily provided by Percona and its clients.
 
 =head1 VERSION
 
-This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision$.
+This manual page documents Ver @VERSION@ Distrib @DISTRIB@ $Revision: 7531 $.
 
 =cut

@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 1;
+use Test::More tests => 2;
 
 use MaatkitTest;
 require "$trunk/mk-table-checksum/mk-table-checksum";
@@ -22,6 +22,13 @@ like(
    $output,
    qr/--replicate table must be database-qualified/,
    "--replicate table must be db-qualified"
+);
+
+$output = `$trunk/mk-table-checksum/mk-table-checksum h=127.1 --replicate test.checksum --throttle-method foo`;
+like(
+   $output,
+   qr/Invalid --throttle-method: foo/,
+   "Invalid --throttle-method"
 );
 
 # #############################################################################

@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# Pipeline package $Revision$
+# Pipeline package $Revision: 7509 $
 # ###########################################################################
 
 # Package: Pipeline
@@ -117,6 +117,8 @@ sub execute {
    my $pipeline_data = $args{pipeline_data} || {};
    $pipeline_data->{oktorun} = $oktorun;
 
+   my $stats = $args{stats};  # optional
+
    MKDEBUG && _d("Pipeline starting at", time);
    my $instrument = $self->{instrument};
    my $processes  = $self->{procs};
@@ -144,6 +146,10 @@ sub execute {
             if ( !$output ) {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
+               if ( $stats ) {
+                  $stats->{"pipeline_restarted_after_"
+                     .$self->{names}->[$procno]}++;
+               }
                last PIPELINE_PROCESS;
             }
             $procno++;

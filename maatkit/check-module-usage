@@ -50,6 +50,9 @@ my %dynamic = (
       TableSyncNibble   => 1,
       TableSyncGroupBy  => 1,
    },
+   'mk-table-usage' => {
+      SlowLogParser => 1,
+   },
 );
 
 # If these base-class modules are present, they should be accompanied

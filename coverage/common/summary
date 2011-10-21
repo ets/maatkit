@@ -57,6 +57,7 @@ File                           stmt   bran   cond    sub    pod   time  total
 .../common/SchemaDiscover.pm   89.5   42.9  100.0   87.5    n/a  100.0   84.2
 .../common/SchemaFindText.pm   86.7   80.0   50.0   88.9    0.0   96.8   80.0
 .../common/SchemaIterator.pm   95.4   81.8   73.8   92.9    0.0    7.0   86.0
+...on/SimpleTCPDumpParser.pm  100.0   71.4   57.1  100.0    0.0   70.2   89.2
 ...t/common/SlavePrefetch.pm   77.4   52.6   51.6   88.6    0.0   85.5   66.5
 ...it/common/SlaveRestart.pm   86.8   57.1   45.5   88.9    0.0   85.6   75.3
 ...t/common/SlowLogParser.pm  100.0   94.1   81.2  100.0    0.0   96.8   94.4
@@ -73,6 +74,7 @@ File                           stmt   bran   cond    sub    pod   time  total
 ...common/TableSyncNibble.pm   83.0   67.1   58.8   80.0    0.0    1.2   73.8
 ...common/TableSyncStream.pm   75.0   62.5   50.0   65.0    0.0   55.2   60.2
 ...t/common/TcpdumpParser.pm  100.0   67.9   50.0  100.0    0.0   99.0   88.2
+...n/TCPRequestAggregator.pm   96.5   73.7   86.4  100.0    0.0   94.7   90.2
 ...on/TextResultSetParser.pm   73.2   50.0   50.0   84.6    0.0   97.9   67.0
 ...mmon/TimeSeriesTrender.pm   88.7   62.5   50.0   90.0    0.0   69.4   78.8
 ...it/common/Transformers.pm   92.7   88.1   81.8   94.1    0.0   71.2   86.2

@@ -9,15 +9,16 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More;
-
-use List::Util qw(max);
+use Test::More tests => 29;
 
 use SchemaIterator;
+use FileIterator;
 use Quoter;
 use DSNParser;
 use Sandbox;
 use OptionParser;
+use MySQLDump;
+use TableParser;
 use MaatkitTest;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
@@ -32,452 +33,387 @@ my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
 my $dbh = $sb->get_dbh_for('master');
 
-if ( !$dbh ) {
-   plan skip_all => "Cannot connect to sandbox master";
-}
-else {
-   plan tests => 38;
-}
+my ($du, $tp);
+my $fi = new FileIterator();
+my $o  = new OptionParser(description => 'SchemaIterator');
+$o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
 
+my $in  = "$trunk/common/t/samples/mysqldump-no-data/";
+my $out = "common/t/samples/SchemaIterator/";
 
-$dbh->{FetchHashKeyName} = 'NAME_lc';
-
-my $si = new SchemaIterator(
-   Quoter        => $q,
-);
-isa_ok($si, 'SchemaIterator');
-
-sub get_all {
-   my ( $itr ) = @_;
-   my @objs;
-   while ( my $obj = $itr->() ) {
-      MKDEBUG && SchemaIterator::_d('Iterator returned', Dumper($obj));
-      push @objs, $obj;
+sub test_so {
+   my ( %args ) = @_;
+   my @required_args = qw(test_name result);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless defined $args{$arg};
    }
-   @objs = sort @objs;
-   return \@objs;
-}
 
-sub get_all_db_tbls {
-   my ( $dbh, $si ) = @_;
-   my @db_tbls;
-   my $next_db = $si->get_db_itr(dbh=>$dbh);
-   while ( my $db = $next_db->() ) {
-      my $next_tbl = $si->get_tbl_itr(
-         dbh   => $dbh,
-         db    => $db,
-         views => 0,
+   @ARGV = $args{filters} ? @{$args{filters}} : ();
+   $o->get_opts();
+
+   my $si;
+   if ( $args{files} ) {
+      my $file_itr = $fi->get_file_itr(@{$args{files}});
+      $si = new SchemaIterator(
+         file_itr     => $file_itr,
+         keep_ddl     => defined $args{keep_ddl} ? $args{keep_ddl} : 1,
+         OptionParser => $o,
+         Quoter       => $q,
+         TableParser  => $tp,
       );
-      while ( my $tbl = $next_tbl->() ) {
-         push @db_tbls, "$db.$tbl";
+   }
+   else {
+      $si = new SchemaIterator(
+         dbh          => $dbh,
+         keep_ddl     => defined $args{keep_ddl} ? $args{keep_ddl} : 1,
+         OptionParser => $o,
+         Quoter       => $q,
+         MySQLDump    => $du,
+         TableParser  => $tp,
+      );
+   }
+
+   # For result files, each db.tbl is printed on its own line
+   # so diff works nicely.
+   my $result_file = -f "$trunk/$args{result}";
+
+   my $res = "";
+   my @objs;
+   while ( my $obj = $si->next_schema_object() ) {
+      if ( $args{return_objs} ) {
+         push @objs, $obj;
+      }
+      else {
+         if ( $result_file || $args{ddl} ) {
+            $res .= "$obj->{db}.$obj->{tbl}\n";
+            $res .= "$obj->{ddl}\n\n" if $args{ddl} || $du;
+         }
+         else {
+            $res .= "$obj->{db}.$obj->{tbl} ";
+         }
       }
    }
-   return \@db_tbls;
+
+   return \@objs if $args{return_objs};
+
+   if ( $result_file ) {
+      ok(
+         no_diff(
+            $res,
+            $args{result},
+            cmd_output    => 1,
+            update_sample => $args{update_sample},
+         ),
+         $args{test_name},
+      );
+   }
+   elsif ( $args{unlike} ) {
+      unlike(
+         $res,
+         $args{unlike},
+         $args{test_name},
+      );
+   }
+   else {
+      is(
+         $res,
+         $args{result},
+         $args{test_name},
+      );
+   }
+
+   return;
 }
 
-# ###########################################################################
-# Test simple, unfiltered get_db_itr().
-# ###########################################################################
-
-$sb->load_file('master', 'common/t/samples/SchemaIterator.sql');
-my @dbs = sort grep { $_ !~ m/information_schema|performance_schema|lost\+found/; } map { $_->[0] } @{ $dbh->selectall_arrayref('show databases') };
-
-my ($next_db, $size) = $si->get_db_itr(dbh=>$dbh);
-is(
-   ref $next_db,
-   'CODE',
-   'get_db_iter() returns a subref'
-);
-
-is_deeply(
-   get_all($next_db),
-   \@dbs,
-   'get_db_iter() found the databases'
-);
-
-is($size, 5, 'The schema iterator showed the correct number of DBs');
-
-# ###########################################################################
-# Test simple, unfiltered get_tbl_itr().
-# ###########################################################################
-
-my ($next_tbl,$tbl_count) = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is(
-   ref $next_tbl,
-   'CODE',
-   'get_tbl_iter() returns a subref'
-);
-
-is_deeply(
-   get_all($next_tbl),
-   [qw(t1 t2 t3)],
-   'get_tbl_itr() found the db1 tables'
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d2');
-is_deeply(
-   get_all($next_tbl),
-   [qw(t1)],
-   'get_tbl_itr() found the db2 table'
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d3');
-is_deeply(
-   get_all($next_tbl),
-   [],
-   'get_tbl_itr() found no db3 tables'
-);
-
-is($tbl_count, 3, 'Table iterator got right number of tables');
-
-# #############################################################################
-# Test make_filter().
-# #############################################################################
-my $o = new OptionParser(
-   description => 'SchemaIterator'
-);
-$o->get_specs("$trunk/mk-parallel-dump/mk-parallel-dump");
-$o->get_opts();
-
-my $filter = $si->make_filter($o);
-is(
-   ref $filter,
-   'CODE',
-   'make_filter() returns a coderef'
-);
-
-$si->set_filter($filter);
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   \@dbs,
-   'Database not filtered',
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   [qw(t1 t2 t3)],
-   'Tables not filtered'
-);
-
-# Filter by --databases (-d).
-@ARGV=qw(--d d1);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   ['d1'],
-   '--databases'
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   [qw(t1 t2 t3)],
-   '--database filter does not affect tables'
-);
-
-# Filter by --databases (-d) and --tables (-t).
-@ARGV=qw(-d d1 -t t2);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t2'],
-   '--databases and --tables'
-);
-
-# Ignore some dbs and tbls.
-@ARGV=('--ignore-databases', 'mysql,sakila,d1,d3');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   ['d2'],
-   '--ignore-databases'
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d2');
-is_deeply(
-   get_all($next_tbl),
-   ['t1'],
-   '--ignore-databases filter does not affect tables'
-);
-
-@ARGV=('--ignore-databases', 'mysql,sakila,d2,d3',
-       '--ignore-tables', 't1,t2');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t3'],
-   '--ignore-databases and --ignore-tables'
-);
-
-# Select some dbs but ignore some tables.
-@ARGV=('-d', 'd1', '--ignore-tables', 't1,t3');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t2'],
-   '--databases and --ignore-tables'
-);
-
-# Filter by engines, which requires extra work: SHOW TABLE STATUS.
-@ARGV=qw(--engines InnoDB);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   \@dbs,
-   '--engines does not affect databases'
-);
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t2'],
-   '--engines'
-);
-
-@ARGV=qw(--ignore-engines MEMORY);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   [qw(t1 t2)],
-   '--ignore-engines'
-);
-
-# ###########################################################################
-# Filter views.
-# ###########################################################################
 SKIP: {
-   skip 'Sandbox master does not have the sakila database', 2
-      unless @{$dbh->selectcol_arrayref('SHOW DATABASES LIKE "sakila"')};
+   skip "Cannot connect to sandbox master", 22 unless $dbh;
+   $sb->wipe_clean($dbh);
 
-   my @sakila_tbls = map { $_->[0] } grep { $_->[1] eq 'BASE TABLE' } @{ $dbh->selectall_arrayref('show /*!50002 FULL*/ tables from sakila') };
-
-   my @all_sakila_tbls = map { $_->[0] } @{ $dbh->selectall_arrayref('show /*!50002 FULL*/ tables from sakila') };
-
-   @ARGV=();
-   $o->get_opts();
-   $si->set_filter($si->make_filter($o));
-
-   $next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'sakila');
-   is_deeply(
-      get_all($next_tbl),
-      \@sakila_tbls,
-      'Table itr does not return views by default'
+   # ########################################################################
+   # Test simple, unfiltered get_db_itr().
+   # ########################################################################
+   test_so(
+      result    => "$out/all-dbs-tbls.txt",
+      test_name => "Iterate all schema objects with dbh",
    );
 
-   $next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'sakila', views=>1);
-   is_deeply(
-      get_all($next_tbl),
-      \@all_sakila_tbls,
-      'Table itr returns views if specified'
+   # ########################################################################
+   # Test filters.
+   # ########################################################################
+   $sb->load_file('master', "common/t/samples/SchemaIterator.sql");
+
+   test_so(
+      filters   => [qw(-d this_db_does_not_exist)],
+      result    => "",
+      test_name => "No databases match",
    );
+
+   test_so(
+      filters   => [qw(-t this_table_does_not_exist)],
+      result    => "",
+      test_name => "No tables match",
+   );
+
+   # Filter by --databases (-d).
+   test_so(
+      filters   => [qw(--databases d1)],
+      result    => "d1.t1 d1.t2 d1.t3 ",
+      test_name => '--databases',
+   ); 
+
+   # Filter by --databases (-d) and --tables (-t).
+   test_so(
+      filters   => [qw(-d d1 -t t2)],
+      result    => "d1.t2 ",
+      test_name => '--databases and --tables',
+   );
+
+   # Ignore some dbs and tbls.
+   test_so(
+      filters   => ['--ignore-databases', 'mysql,sakila,d1,d3'],
+      result    => "d2.t1 ",
+      test_name => '--ignore-databases',
+   );
+
+   test_so(
+      filters   => ['--ignore-databases', 'mysql,sakila,d2,d3',
+                    '--ignore-tables', 't1,t2'],
+      result    => "d1.t3 ",
+      test_name => '--ignore-databases and --ignore-tables',
+   );
+
+   # Select some dbs but ignore some tables.
+   test_so(
+      filters   => ['-d', 'd1', '--ignore-tables', 't1,t3'],
+      result    => "d1.t2 ",
+      test_name => '--databases and --ignore-tables',
+   );
+
+   # Filter by engines.  This also tests that --engines is case-insensitive
+   test_so(
+      filters   => ['-d', 'd1,d2,d3', '--engines', 'INNODB'],
+      result    => "d1.t2 ",
+      test_name => '--engines',
+   );
+
+   test_so(
+      filters   => ['-d', 'd1,d2,d3', '--ignore-engines', 'innodb,myisam'],
+      result    => "d1.t3 ",
+      test_name => '--ignore-engines',
+   );
+   
+   # Filter by regex.
+   test_so(
+      filters   => ['--databases-regex', 'd[13]', '--tables-regex', 't[^3]'],
+      result    => "d1.t1 d1.t2 ",
+      test_name => '--databases-regex and --tables-regex',
+   );
+
+   test_so(
+      filters   => ['--ignore-databases-regex', '(?:^d[23]|mysql|info|sakila)',
+                    '--ignore-tables-regex', 't[^23]'],
+      result    => "d1.t2 d1.t3 ",
+      test_name => '--ignore-databases-regex',
+   );
+
+   # ########################################################################
+   # Filter views.
+   # ########################################################################
+   SKIP: {
+      skip 'Sandbox master does not have the sakila database', 1
+         unless @{$dbh->selectcol_arrayref('SHOW DATABASES LIKE "sakila"')};
+
+      test_so(
+         filteres  => [qw(-d sakila)],
+         result    => "",  # hack; uses unlike instead
+         unlike    => qr/
+             actor_info
+            |customer_list
+            |film_list
+            |nicer_but_slower_film_list
+            |sales_by_film_category
+            |sales_by_store
+            |staff_list/x,
+         test_name => "Iterator does not return views",
+      );
+   };
+
+   # ########################################################################
+   # Issue 806: mk-table-sync --tables does not honor schema qualier
+   # ########################################################################
+   # Filter by db-qualified table.  There is t1 in both d1 and d2.
+   # We want only d1.t1.
+   test_so(
+      filters   => [qw(-t d1.t1)],
+      result    => "d1.t1 ",
+      test_name => '-t d1.t1 (issue 806)',
+   );
+
+   test_so(
+      filters   => [qw(-d d1 -t d1.t1)],
+      result    => "d1.t1 ",
+      test_name => '-d d1 -t d1.t1 (issue 806)',
+   );
+
+   test_so(
+      filters   => [qw(-d d2 -t d1.t1)],
+      result    => "",
+      test_name => '-d d2 -t d1.t1 (issue 806)',
+   );
+
+   test_so(
+      filters   => ['-t','d1.t1,d1.t3'],
+      result    => "d1.t1 d1.t3 ",
+      test_name => '-t d1.t1,d1.t3 (issue 806)',
+   );
+
+   test_so(
+      filters   => ['--ignore-databases', 'mysql,sakila',
+                    '--ignore-tables', 'd1.t1'],
+      result    => "d1.t2 d1.t3 d2.t1 ",
+      test_name => '--ignore-databases and --ignore-tables d1.t1 (issue 806)',
+   );
+
+   test_so(
+      filters   => ['-t','d1.t3,d2.t1'],
+      result    => "d1.t3 d2.t1 ",
+      test_name => '-t d1.t3,d2.t1 (issue 806)',
+   );
+
+   # ########################################################################
+   # Issue 1161: make_filter() with only --tables db.foo filter does not work
+   # ########################################################################
+   # mk-index-usage does not have any of the schema filters with default
+   # values like --engines so when we do --tables that will be the only
+   # filter.
+   $o = new OptionParser(description => 'SchemaIterator');
+   $o->get_specs("$trunk/mk-index-usage/mk-index-usage");
+
+   test_so(
+      filters   => [qw(-t d1.t1)],
+      result    => "d1.t1 ",
+      test_name => '-t d1.t1 (issue 1161)',
+   );
+
+   # ########################################################################
+   # Issue 1193: Make SchemaIterator skip PERFORMANCE_SCHEMA
+   # ########################################################################
+   SKIP: {
+      skip "Test for MySQL v5.5", 1 unless $sandbox_version ge '5.5';
+
+      test_so(
+         result    => "", # hack, uses unlike instead
+         unlike    => qr/^performance_schema/,
+         test_name => "performance_schema automatically ignored",
+      );
+   }
+
+
+   # ########################################################################
+   # Getting CREATE TALBE (ddl).
+   # ########################################################################
+   $du = new MySQLDump();
+   test_so(
+      filters   => [qw(-t mysql.user)],
+      result    => "$out/mysql-user-ddl.txt",
+      test_name => "Get CREATE TABLE with dbh",
+   );
+
+   # Kill the MySQLDump obj in case the next tests don't want to use it.
+   $du = undef;
+
+   $sb->wipe_clean($dbh);
 };
 
-# ###########################################################################
-# Make sure --engine filter is case-insensitive.
-# ###########################################################################
+# ############################################################################
+# Test getting schema from mysqldump files.
+# ############################################################################
 
-# In MySQL 5.0 it's "MRG_MyISAM" but in 5.1 it's "MRG_MYISAM".  SiLlY.
-
-@ARGV=qw(--engines InNoDb);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t2'],
-   '--engines is case-insensitive'
+test_so(
+   files     => ["$in/dump001.txt"],
+   result    => "test.a test.b test2.a ",
+   test_name => "Iterate schema in dump001.txt",
 );
 
-@ARGV=qw(--ignore-engines InNoDb);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t1','t3'],
-   '--ignore-engines is case-insensitive'
+test_so(
+   files     => ["$in/all-dbs.txt"],
+   result    => "$out/all-dbs.txt",
+   ddl       => 1,
+   test_name => "Iterate schema in all-dbs.txt",
 );
 
-# ###########################################################################
-# Filter by regex.
-# ###########################################################################
-@ARGV=qw(--databases-regex d[13] --tables-regex t[^3]);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   [qw(d1 d3)],
-   '--databases-regex'
+test_so(
+   files     => ["$in/dump001.txt", "$in/dump001.txt"],
+   result    => "$out/dump001-twice.txt",
+   ddl       => 1,
+   test_name => "Iterate schema in multiple files",
 );
 
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   ['t1','t2'],
-   '--tables-regex'
+test_so(
+   files     => ["$in/dump001.txt"],
+   filters   => [qw(--databases TEST2)],
+   result    => "test2.a ",
+   test_name => "Filter dump file by --databases",
 );
 
-# ignore patterns
-@ARGV=qw{--ignore-databases-regex (?:^d[23]|mysql|info|sakila) --ignore-tables-regex t[^23]};
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-$next_db = $si->get_db_itr(dbh=>$dbh);
-is_deeply(
-   get_all($next_db),
-   ['d1'],
-   '--ignore-databases-regex'
+# ############################################################################
+# Getting tbl_struct.
+# ############################################################################
+my $objs = test_so(
+   files     => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
 );
 
-$next_tbl = $si->get_tbl_itr(dbh=>$dbh, db=>'d1');
-is_deeply(
-   get_all($next_tbl),
-   [qw(t2 t3)],
-   '--ignore-tables-regex'
+my $n_tbl_structs = grep { exists $_->{tbl_struct} } @$objs;
+
+is(
+   $n_tbl_structs,
+   0,
+   'No tbl_struct without TableParser'
 );
 
+$tp = new TableParser(Quoter => $q);
 
-# #############################################################################
-# Issue 806: mk-table-sync --tables does not honor schema qualier
-# #############################################################################
-
-# Filter by db-qualified table.  There is t1 in both d1 and d2.
-# We want only d1.t1.
-@ARGV=qw(-t d1.t1);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t1)],
-   '-t d1.t1 (issue 806)'
+$objs = test_so(
+   files     => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
 );
 
-@ARGV=qw(-d d1 -t d1.t1);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
+$n_tbl_structs = grep { exists $_->{tbl_struct} } @$objs;
 
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t1)],
-   '-d d1 -t d1.t1 (issue 806)'
+is(
+   $n_tbl_structs,
+   scalar @$objs,
+   'Got tbl_struct for each schema object'
 );
 
-@ARGV=qw(-d d2 -t d1.t1);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
+# Kill the TableParser obj in case the next tests don't want to use it.
+$tp = undef;
 
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [],
-   '-d d2 -t d1.t1 (issue 806)'
+# ############################################################################
+# keep_ddl
+# ############################################################################
+$objs = test_so(
+   files       => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
+   keep_ddl    => 0,
 );
 
-@ARGV=('-t','d1.t1,d1.t3');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
+my $n_ddls = grep { exists $_->{ddl} } @$objs;
 
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t1 d1.t3)],
-   '-t d1.t1,d1.t3 (issue 806)'
+is(
+   $n_ddls,
+   0,
+   'DDL deleted unless keep_ddl'
 );
-
-@ARGV=('--ignore-databases', 'mysql,sakila', '--ignore-tables', 'd1.t2');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t1 d1.t3 d2.t1)],
-   '--ignore-tables d1.t2 (issue 806)'
-);
-
-@ARGV=('-t','d1.t3,d2.t1');
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t3 d2.t1)],
-   '-t d1.t3,d2.t1 (issue 806)'
-);
-
-
-# #############################################################################
-# Issue 1161: make_filter() with only --tables db.foo filter does not work
-# #############################################################################
-$o = new OptionParser(
-   description => 'SchemaIterator'
-);
-# mk-index-usage does not have any of the schema filters with default
-# values like --engines so when we do --tables that will be the only
-# filter.
-$o->get_specs("$trunk/mk-index-usage/mk-index-usage");
-$o->get_opts();
-
-@ARGV=qw(-t d1.t1);
-$o->get_opts();
-$si->set_filter($si->make_filter($o));
-
-is_deeply(
-   get_all_db_tbls($dbh, $si),
-   [qw(d1.t1)],
-   '-t d1.t1 (issue 1161)'
-);
-
-
-# #############################################################################
-# Issue 1193: Make SchemaIterator skip PERFORMANCE_SCHEMA
-# #############################################################################
-SKIP: {
-   skip "Test for MySQL v5.5", 1 unless $sandbox_version ge '5.5';
-
-   my $o = new OptionParser(
-      description => 'SchemaIterator'
-   );
-   $o->get_specs("$trunk/mk-parallel-dump/mk-parallel-dump");
-   $o->get_opts();
-
-   my $filter = $si->make_filter($o);
-   $si->set_filter($filter);
-
-   my $so     = get_all_db_tbls($dbh, $si);
-   my $has_ps = grep { m/^performance_schema/ } @$so;
-   ok(
-      !$has_ps,
-      "performance_schema automatically ignored"
-   );
-}
 
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($dbh);
 exit;

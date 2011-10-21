@@ -1,4 +1,4 @@
-# This program is copyright 2010 Percona Inc.
+# This program is copyright 2010-2011 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# QueryAdvisorRules package $Revision$
+# QueryAdvisorRules package $Revision: 7473 $
 # ###########################################################################
 package QueryAdvisorRules;
 use base 'AdvisorRules';
@@ -69,7 +69,7 @@ sub get_rules {
          my $cols  = $event->{query_struct}->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{tbl} && $col->{name} eq '*' &&  $col->{alias};
+            return 0 if $col->{tbl} && $col->{col} eq '*' &&  $col->{alias};
          }
          return;
       },
@@ -83,12 +83,12 @@ sub get_rules {
          my $tbls   = $struct->{from} || $struct->{into} || $struct->{tables};
          return unless $tbls;
          foreach my $tbl ( @$tbls ) {
-            return 0 if $tbl->{alias} && $tbl->{alias} eq $tbl->{name};
+            return 0 if $tbl->{alias} && $tbl->{alias} eq $tbl->{tbl};
          }
          my $cols = $struct->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{alias} && $col->{alias} eq $col->{name};
+            return 0 if $col->{alias} && $col->{alias} eq $col->{col};
          }
          return;
       },
@@ -103,7 +103,7 @@ sub get_rules {
          foreach my $arg ( @$where ) {
             return 0
                if ($arg->{operator} || '') eq 'like'
-                  && $arg->{value} =~ m/[\'\"][\%\_]./;
+                  && $arg->{right_arg} =~ m/[\'\"][\%\_]./;
          }
          return;
       },
@@ -118,7 +118,7 @@ sub get_rules {
          foreach my $arg ( @$where ) {
             return 0
                if ($arg->{operator} || '') eq 'like'
-                  && $arg->{value} !~ m/[%_]/;
+                  && $arg->{right_arg} !~ m/[%_]/;
          }
          return;
       },
@@ -184,9 +184,9 @@ sub get_rules {
                            grep { $_->{column} }
                            @$orderby;
          foreach my $pred ( @$where ) {
-            my $val = $pred->{value};
+            my $val = $pred->{right_arg};
             next unless $val;
-            return 0 if $val =~ m/^\d+$/ && $orderby_col{lc $pred->{column}};
+            return 0 if $val =~ m/^\d+$/ && $orderby_col{lc $pred->{left_arg}};
          }
          return;
       },
@@ -248,7 +248,7 @@ sub get_rules {
          my $cols = $event->{query_struct}->{columns};
          return unless $cols;
          foreach my $col ( @$cols ) {
-            return 0 if $col->{name} eq '*';
+            return 0 if $col->{col} eq '*';
          }
          return;
       },
@@ -342,7 +342,7 @@ sub get_rules {
          # All SELECT cols must be in GROUP BY cols clause.
          # E.g. select a, b, c from tbl group by a; -- non-deterministic
          foreach my $col ( @$cols ) {
-            return 0 unless $groupby_col{ $col->{name} };
+            return 0 unless $groupby_col{ $col->{col} };
          }
          return;
       },
@@ -403,7 +403,7 @@ sub get_rules {
          # in a comma join, the comma join is usually culprit of this rule.
          for my $i ( 0..($n_tbls-1) ) {
             my $tbl      = $tbls->[$i];
-            my $tbl_name = lc $tbl->{name};
+            my $tbl_name = lc $tbl->{tbl};
 
             $tbl_cnt{$tbl_name}->{cnt}++;
             $tbl_cnt{$tbl_name}->{ansi_join}++
@@ -441,18 +441,19 @@ sub get_rules {
          # WHERE clause that is anything but "IS NULL".  So in the example
          # above, R.b=10 is this culprit.
          # http://code.google.com/p/maatkit/issues/detail?id=950
-         my %outer_tbls = map { $_->{name} => 1 } get_outer_tables($tbls);
+         my %outer_tbls = map { $_->{tbl} => 1 } get_outer_tables($tbls);
          MKDEBUG && _d("Outer tables:", keys %outer_tbls);
          return unless %outer_tbls;
 
          foreach my $pred ( @$where ) {
-            next unless $pred->{column};  # skip constants like 1 in "WHERE 1"
-            my ($tbl, $col) = split /\./, $pred->{column};
+            next unless $pred->{left_arg};  # skip constants like 1 in "WHERE 1"
+            my ($tbl, $col) = split /\./, $pred->{left_arg};
             if ( $tbl && $col && $outer_tbls{$tbl} ) {
                # Only outer_tbl.col IS NULL is permissible.
-               if ( $pred->{operator} ne 'is' || $pred->{value} !~ m/null/i ) {
+               if ($pred->{operator} ne 'is' || $pred->{right_arg} !~ m/null/i)
+               {
                   MKDEBUG && _d("Predicate prevents OUTER JOIN:",
-                     map { $pred->{$_} } qw(column operator value));
+                     map { $pred->{$_} } qw(left_arg operator right_arg));
                   return 0;
                }
             }
@@ -477,7 +478,7 @@ sub get_rules {
          my %outer_tbl_join_cols;
          my @unknown_join_cols;
          foreach my $outer_tbl ( get_outer_tables($tbls) ) {
-            $outer_tbls{$outer_tbl->{name}} = 1;
+            $outer_tbls{$outer_tbl->{tbl}} = 1;
 
             # For "L LEFT JOIN R" R is the outer table and since it follows
             # L its table struct will have the join struct with the join
@@ -489,10 +490,10 @@ sub get_rules {
             if ( !$join ) {
                my ($inner_tbl) = grep { 
                   exists $_->{join} 
-                  && $_->{join}->{to} eq $outer_tbl->{name}
+                  && $_->{join}->{to} eq $outer_tbl->{tbl}
                } @$tbls;
                $join = $inner_tbl->{join}; 
-               die "Cannot find join structure for $outer_tbl->{name}"
+               die "Cannot find join structure for $outer_tbl->{tbl}"
                   unless $join;
             }
 
@@ -509,7 +510,7 @@ sub get_rules {
                   next unless $pred->{operator} eq '=';
                   # Assume all equality comparisons are like tbl1.col=tbl2.col.
                   # Thus join conditions like tbl1.col<tbl2.col aren't handled.
-                  push @join_cols, $pred->{column}, $pred->{value};
+                  push @join_cols, $pred->{left_arg}, $pred->{right_arg};
                }
                MKDEBUG && _d("Join columns:", @join_cols);
                foreach my $join_col ( @join_cols ) {
@@ -528,7 +529,7 @@ sub get_rules {
                   }
                   else {
                      $outer_tbl_join_cols{$col} = 1
-                        if $tbl eq $outer_tbl->{name};
+                        if $tbl eq $outer_tbl->{tbl};
                   }
                }
             }
@@ -545,10 +546,11 @@ sub get_rules {
          # ones that are 1) not in the JOIN expression and 2) "IS NULL'.
          # http://code.google.com/p/maatkit/issues/detail?id=950
          foreach my $pred ( @$where ) {
-            next unless $pred->{column};  # skip constants like 1 in "WHERE 1"
-            next unless $pred->{operator} eq 'is' && $pred->{value} =~ m/NULL/i;
+            next unless $pred->{left_arg}; # skip constants like 1 in "WHERE 1"
+            next unless $pred->{operator} eq 'is'
+               && $pred->{right_arg} =~ m/NULL/i;
 
-            my ($tbl, $col) = split /\./, $pred->{column};
+            my ($tbl, $col) = split /\./, $pred->{left_arg};
             if ( !$col ) {
                # A col in the WHERE clause isn't table-qualified.  Try to
                # determine its table.  If we can, great, if not "return 0 if"

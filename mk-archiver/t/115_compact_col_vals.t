@@ -24,7 +24,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 3;
+   plan tests => 5;
 }
 
 my $output;
@@ -77,8 +77,24 @@ is(
    "Reset AUTO_INCREMENT"
 );
 
+# Try again with t2 which does not start with 1.
+`$cmd --purge --no-safe-auto-inc --source F=$cnf,D=cai,t=t2,m=compact_col_vals --where "1=1"`;
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from `t2` order by id'),
+   $compact_vals,
+   'Compacted values (t2)'
+);
+
+$autoinc = $dbh->selectrow_hashref('show table status from `cai` like "t2"');
+is(
+   $autoinc->{auto_increment},
+   16,
+   "Reset AUTO_INCREMENT (t2)"
+);
+
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($dbh);
+#$sb->wipe_clean($dbh);
 exit;

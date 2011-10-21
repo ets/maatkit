@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# MaatkitTest package $Revision$
+# MaatkitTest package $Revision: 7598 $
 # ###########################################################################
 package MaatkitTest;
 
@@ -163,11 +163,12 @@ sub output {
    *STDERR = *STDOUT if $args{stderr};
 
    eval { $code->() };
-   close *output_fh;
+
    if ( $EVAL_ERROR ) {
       die $EVAL_ERROR if $die;
-      return $EVAL_ERROR;
+      warn $EVAL_ERROR;
    }
+   close *output_fh;
 
    # Possible transform output before returning it.  This doesn't work
    # if output was captured to a file.

@@ -1,5 +1,13 @@
 Changelog for mk-query-digest:
 
+   * Added --[no]check-privileges.
+   * Added --type drizzlelog for parsing Drizzle query logs.
+
+2011-06-08: version 0.9.29
+
+   * --statistics did not print if no events were processed.
+   * Changed --statistics report format (issue 1320).
+
 2011-04-04: version 0.9.28
 
    * Minimum 2-column query review history table did not work (issue 1265).

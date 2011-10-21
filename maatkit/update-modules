@@ -11,7 +11,7 @@ fi
 # omit it, all are updated).
 
 if [ -z $1 ]; then
-   echo "Specify a package to update."
+   echo "Specify a package (tool directory) to update."
    echo "Usage: $0 PACKAGE [MODULE]"
    echo "If no MODULE is specified, then all out-of-date modules in PACKAGE are updated."
    exit 1

@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# TableParser package $Revision$
+# TableParser package $Revision: 7550 $
 # ###########################################################################
 
 # Package: TableParser
@@ -410,6 +410,7 @@ sub get_keys {
 # Like get_keys() above but only returns a hash of foreign keys.
 sub get_fks {
    my ( $self, $ddl, $opts ) = @_;
+   my $q   = $self->{Quoter};
    my $fks = {};
 
    foreach my $fk (
@@ -419,17 +420,22 @@ sub get_fks {
       my ( $cols ) = $fk =~ m/FOREIGN KEY \(([^\)]+)\)/;
       my ( $parent, $parent_cols ) = $fk =~ m/REFERENCES (\S+) \(([^\)]+)\)/;
 
+      my ($db, $tbl) = $q->split_unquote($parent, $opts->{database});
+      my %parent_tbl = (tbl => $tbl);
+      $parent_tbl{db} = $db if $db;
+
       if ( $parent !~ m/\./ && $opts->{database} ) {
-         $parent = "`$opts->{database}`.$parent";
+         $parent = $q->quote($opts->{database}) . ".$parent";
       }
 
       $fks->{$name} = {
          name           => $name,
          colnames       => $cols,
          cols           => [ map { s/[ `]+//g; $_; } split(',', $cols) ],
-         parent_tbl     => $parent,
-         parent_colnames=> $parent_cols,
+         parent_tbl     => \%parent_tbl,
+         parent_tblname => $parent,
          parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
+         parent_colnames=> $parent_cols,
          ddl            => $fk,
       };
    }

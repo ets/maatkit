@@ -15,7 +15,7 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# QueryParser package $Revision$
+# QueryParser package $Revision: 7452 $
 # ###########################################################################
 
 # Package: QueryParser
@@ -78,7 +78,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          # Handles CREATE DATABASE, not to be confused with CREATE TABLE.
          MKDEBUG && _d('Query alters a database, not a table');
